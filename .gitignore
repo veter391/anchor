@@ -1,0 +1,42 @@
+# ── Internal (never in the repo) ──────────────────────────────
+/Documents/
+/OWNER-RULES.md
+/archived/
+*.local.md
+
+# ── Secrets ───────────────────────────────────────────────────
+.env
+.env.*
+*.pem
+*.key
+
+# ── Node / frontend ───────────────────────────────────────────
+node_modules/
+dist/
+dist-ssr/
+coverage/
+.vite/
+
+# ── Rust / Tauri ──────────────────────────────────────────────
+target/
+src-tauri/gen/
+
+# ── Models & benchmark artifacts (downloaded at first run) ────
+/models/
+*.onnx
+*.ort
+*.gguf
+/bench/recordings/
+
+# ── Local state ───────────────────────────────────────────────
+*.db
+*.sqlite
+*.log
+
+# ── OS / editors ──────────────────────────────────────────────
+Thumbs.db
+Desktop.ini
+.DS_Store
+.idea/
+.vscode/
+*.swp
