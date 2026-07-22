@@ -183,31 +183,45 @@ fn tick(app: &tauri::AppHandle) -> Result<(), String> {
 
     if let Some(qvec) = &them_vec {
         let matches = search::query_cards_with_vec(&conn, qvec, &them_text)?;
-        let candidates: Vec<Candidate> = matches
+        // Score for the hysteresis thresholds is the REAL cosine similarity,
+        // not the RRF rank score: RRF ranks are near-identical across the top
+        // few cards (rank-1 in both legs ≈ 1.0 for everything), so a rank-based
+        // margin can never separate the current card from a challenger. Cosine
+        // is the actual "how close is this topic" signal the thresholds want.
+        // A keyword-only hit (no vector rank) gets a moderate floor — the exact
+        // term matched, which is a real signal for names/numbers.
+        const BM25_ONLY_SCORE: f64 = 0.6;
+        let mut candidates: Vec<Candidate> = matches
             .iter()
             .map(|m| Candidate {
                 card_id: m.card_id.clone(),
-                score: search::normalize_fused(m.fused),
+                score: m
+                    .vec_distance
+                    .map(|d| 1.0 - (d * d) / 2.0)
+                    .unwrap_or(BM25_ONLY_SCORE),
             })
             .collect();
+        // Order by real similarity so decide()'s `first()` is the closest card.
+        candidates.sort_by(|a, b| b.score.total_cmp(&a.score));
 
         let decision = {
             let mut engine = lock_or_recover(&live.engine);
             engine.decide(&candidates, Instant::now())
         };
 
-        for (m, c) in matches.iter().zip(&candidates).take(3) {
-            let title = store::get_card(&conn, &m.card_id)?
+        for c in candidates.iter().take(3) {
+            let m = matches.iter().find(|m| m.card_id == c.card_id);
+            let title = store::get_card(&conn, &c.card_id)?
                 .map(|c| c.title)
-                .unwrap_or_else(|| m.card_id.clone());
+                .unwrap_or_else(|| c.card_id.clone());
             top.push(DebugCandidate {
-                card_id: m.card_id.clone(),
+                card_id: c.card_id.clone(),
                 title,
                 score: c.score,
-                vec_rank: m.vec_rank,
-                bm25_rank: m.bm25_rank,
+                vec_rank: m.and_then(|m| m.vec_rank),
+                bm25_rank: m.and_then(|m| m.bm25_rank),
                 // Unit vectors: cosine = 1 − L2²/2.
-                vec_cos: m.vec_distance.map(|d| 1.0 - (d * d) / 2.0),
+                vec_cos: m.and_then(|m| m.vec_distance).map(|d| 1.0 - (d * d) / 2.0),
             });
         }
 

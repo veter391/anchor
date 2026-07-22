@@ -11,13 +11,11 @@ use std::collections::HashMap;
 pub const RRF_K: f64 = 60.0;
 const LEG_LIMIT: usize = 10;
 
-/// Highest possible fused score: rank 1 in both legs.
-pub const MAX_FUSED: f64 = 2.0 / (RRF_K + 1.0);
-
-/// Normalizes an RRF fused score to [0, 1] for threshold comparisons.
-pub fn normalize_fused(fused: f64) -> f64 {
-    (fused / MAX_FUSED).clamp(0.0, 1.0)
-}
+// RRF fused score orders the candidate list (it fuses the vector and keyword
+// legs, catching proper nouns the vector leg misses). It is NOT used for the
+// hysteresis thresholds: rank-based scores are near-identical across the top
+// cards, so they cannot express "how much closer" one topic is. The match
+// engine scores cards by real cosine similarity instead (see live.rs).
 
 #[derive(Debug, Serialize, Clone)]
 pub struct Match {
