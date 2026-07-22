@@ -26,6 +26,10 @@ pub trait Provider {
 pub struct AssemblyPrompt {
     pub question: String,
     pub material: String,
+    /// Built-in universal bridge anchors relevant to this question (may be
+    /// empty). NOT the user's material — the model must mark bullets drawn
+    /// from these with [K].
+    pub bridges: Vec<String>,
     pub max_bullets: usize,
 }
 
@@ -46,8 +50,9 @@ impl AssemblyPrompt {
              GROUNDING LADDER (follow in order):\n\
              1. If the person's OWN MATERIAL below answers the question, use it. Prefer their exact \
              terms and numbers.\n\
-             2. If the material does NOT answer this question, still help: give a short honest answer \
-             from general knowledge, and mark each such bullet by starting it with the token [K].\n\
+             2. If the material does NOT answer this question, still help: use the UNIVERSAL BRIDGES \
+             below (if provided) or a short honest answer from general knowledge, and mark each such \
+             bullet by starting it with the token [K].\n\
              3. NEVER return an empty card. Blank is a failure. If you truly cannot help, return one \
              bullet: [K] Ask them to clarify, then bridge to what you know.\n\
              4. Never invent specifics (names, numbers, dates) you are not sure of. An honest general \
@@ -59,7 +64,7 @@ impl AssemblyPrompt {
     }
 
     pub fn user(&self) -> String {
-        format!(
+        let mut s = format!(
             "QUESTION JUST ASKED:\n{q}\n\nMY MATERIAL:\n{m}",
             q = self.question,
             m = if self.material.trim().is_empty() {
@@ -67,7 +72,18 @@ impl AssemblyPrompt {
             } else {
                 &self.material
             }
-        )
+        );
+        if !self.bridges.is_empty() {
+            s.push_str(
+                "\n\nUNIVERSAL BRIDGES (not my material — if used, mark the bullet [K]):\n",
+            );
+            for b in &self.bridges {
+                s.push_str("- ");
+                s.push_str(b);
+                s.push('\n');
+            }
+        }
+        s
     }
 }
 

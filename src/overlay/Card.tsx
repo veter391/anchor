@@ -22,10 +22,17 @@ const SOURCE_LABEL: Partial<Record<CardSource, { text: string; color: string }>>
  *  bar, motion limited to colour shifts and a 120 ms card fade. */
 export const Card = forwardRef<HTMLDivElement, { card: CardData }>(
   function Card({ card }, ref) {
-    const label = SOURCE_LABEL[card.source];
     const hasModelKnowledge = card.bullets.some(
       (b) => b.provenance === "model_knowledge",
     );
+    const allModelKnowledge =
+      card.bullets.length > 0 &&
+      card.bullets.every((b) => b.provenance === "model_knowledge");
+    // The header must never claim "from your material" when nothing is.
+    const label =
+      card.source === "assembled" && allModelKnowledge
+        ? { text: "ASSEMBLED LIVE · model knowledge · ", color: "var(--model-know)" }
+        : SOURCE_LABEL[card.source];
     return (
       <div
         ref={ref}

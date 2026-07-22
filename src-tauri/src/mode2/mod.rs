@@ -9,6 +9,7 @@
 //! grounding ladder, the post-check, and the panic card live here and do not
 //! depend on which provider answered.
 
+pub mod fallback_kb;
 pub mod local;
 pub mod models;
 pub mod openai_compat;
@@ -215,10 +216,20 @@ pub async fn assemble(
     material: &Material,
     question: &str,
 ) -> Result<AssembledCard, String> {
+    // One question embedding, reused by the fallback-KB selection here and
+    // the relevance gate after generation.
+    let qvec = embedder.embed_query(question)?;
+    // Built-in universal bridges relevant to THIS question (owner decision:
+    // the card must help even when the user's material is silent). They are
+    // hints the model must mark [K]; they never enter Material::chunks(), so
+    // the post-check labels anything derived from them as model-knowledge.
+    let bridges = fallback_kb::relevant(embedder, &qvec, REL_FLOOR, 6).unwrap_or_default();
+
     let material_text = material_to_prompt(material);
     let prompt = AssemblyPrompt {
         question: question.to_string(),
         material: material_text,
+        bridges,
         max_bullets: MAX_BULLETS,
     };
 
@@ -269,7 +280,6 @@ pub async fn assemble(
     // owner-caught failure: an off-topic question answered with confident
     // but unrelated "your material" bullets).
     if !texts.is_empty() {
-        let qvec = embedder.embed_query(question)?;
         let passage_items: Vec<(String, String)> =
             texts.iter().map(|t| (String::new(), t.clone())).collect();
         let bvecs = embedder.embed_passages(&passage_items)?;
