@@ -19,6 +19,32 @@ use tauri::{Emitter, Manager};
 /// always a wrong/dead output endpoint — the classic earbuds/loopback trap.
 const DEAD_CHANNEL_SECS: u64 = 6;
 
+/// Speaker-echo filter window and threshold: a "me" final that overlaps a
+/// "them" final from the last ~4 s by this fraction of words is the mic
+/// hearing the speakers, not the user — drop it from the match engine.
+const ECHO_WINDOW_MS: u64 = 4000;
+const ECHO_OVERLAP: f64 = 0.6;
+
+/// Word-overlap of `a` relative to the shorter of the two (0..1). Cheap
+/// bag-of-words containment — good enough to spot near-duplicate echoes
+/// without flagging a user who merely says a couple of the same words.
+fn text_overlap(a: &str, b: &str) -> f64 {
+    let norm = |s: &str| -> Vec<String> {
+        s.split(|c: char| !c.is_alphanumeric())
+            .filter(|w| w.len() > 1)
+            .map(|w| w.to_lowercase())
+            .collect()
+    };
+    let wa = norm(a);
+    let wb = norm(b);
+    if wa.is_empty() || wb.is_empty() {
+        return 0.0;
+    }
+    let set_b: std::collections::HashSet<&String> = wb.iter().collect();
+    let shared = wa.iter().filter(|w| set_b.contains(w)).count();
+    shared as f64 / wa.len().min(wb.len()) as f64
+}
+
 /// Owns the running capture + worker; None when audio is stopped.
 #[derive(Default)]
 pub struct AudioState {
@@ -153,6 +179,8 @@ fn worker_loop(
     let mut them = asr.new_channel();
     let mut me = asr.new_channel();
     let origin = Instant::now();
+    // Recent "them" finals, for the speaker-echo filter (see below).
+    let mut recent_them: std::collections::VecDeque<(u64, String)> = std::collections::VecDeque::new();
 
     while !stop.load(std::sync::atomic::Ordering::SeqCst) {
         let chunk = match rx.recv_timeout(std::time::Duration::from_millis(250)) {
@@ -173,10 +201,28 @@ fn worker_loop(
         let emit = asr.feed(ch, chunk.sample_rate, &chunk.samples);
         match emit {
             Emit::Final(text) => {
-                // Same path the Phase-3 player used → the match engine ticks.
-                let live = app.state::<LiveState>();
-                if let Err(e) = crate::live::feed_transcript_internal(&live, speaker, &text) {
-                    tracing::warn!(error = %e, "feed_transcript failed");
+                if speaker == "them" {
+                    recent_them.push_back((now_ms, text.clone()));
+                    while recent_them.front().is_some_and(|(t, _)| now_ms - t > ECHO_WINDOW_MS) {
+                        recent_them.pop_front();
+                    }
+                }
+                // Speaker-echo filter: on open speakers (no headphones) the mic
+                // hears the other side out loud, so "them" bleeds into "me" as a
+                // near-identical final. Feeding that to the ME window would mark
+                // bullets covered while the OTHER person is talking. Drop it from
+                // the engine (still show the partial). Full AEC is Phase 7.
+                let is_echo = speaker == "me"
+                    && recent_them.iter().any(|(_, t)| text_overlap(&text, t) >= ECHO_OVERLAP);
+
+                if !is_echo {
+                    // Same path the Phase-3 player used → the match engine ticks.
+                    let live = app.state::<LiveState>();
+                    if let Err(e) = crate::live::feed_transcript_internal(&live, speaker, &text) {
+                        tracing::warn!(error = %e, "feed_transcript failed");
+                    }
+                } else {
+                    tracing::debug!(text = %text, "dropped mic echo of system audio");
                 }
                 app.emit_to(
                     "dashboard",
@@ -234,5 +280,32 @@ fn health_loop(
             app.emit_to("dashboard", "audio:health", health.clone()).ok();
             last = Some(health);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn echo_of_the_other_side_is_detected() {
+        // Mic hears the speakers: near-identical text → flagged as echo.
+        let them = "so tell me why are you leaving your own company";
+        let me_echo = "so tell me why are you leaving your own company";
+        assert!(text_overlap(me_echo, them) >= ECHO_OVERLAP);
+    }
+
+    #[test]
+    fn the_users_own_distinct_answer_is_not_echo() {
+        let them = "so tell me why are you leaving your own company";
+        let me_answer = "good question i love building things and want more depth";
+        assert!(text_overlap(me_answer, them) < ECHO_OVERLAP);
+    }
+
+    #[test]
+    fn a_few_shared_words_do_not_trip_the_filter() {
+        let them = "what are your salary expectations for this role";
+        let me = "my salary target is competitive and flexible";
+        assert!(text_overlap(me, them) < ECHO_OVERLAP);
     }
 }
