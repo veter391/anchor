@@ -77,13 +77,33 @@ pub fn feed_transcript_internal(
 }
 
 #[tauri::command]
-pub fn reset_live(live: tauri::State<'_, LiveState>) {
-    let mut w = lock_or_recover(&live.windows);
-    w.them.clear();
-    w.me.clear();
-    w.origin = Instant::now();
+pub fn reset_live(
+    live: tauri::State<'_, LiveState>,
+    db: tauri::State<'_, crate::Db>,
+) -> Result<(), String> {
+    {
+        let mut w = lock_or_recover(&live.windows);
+        w.them.clear();
+        w.me.clear();
+        w.origin = Instant::now();
+    }
     lock_or_recover(&live.engine).reset();
+    // Clear the scratch session's live rows so a re-run doesn't accumulate
+    // duplicate coverage/event rows (coverage is sticky in memory; the DB is
+    // the record, and the engine reset just wiped the in-memory flags).
+    let conn = db.conn.lock().unwrap_or_else(|p| p.into_inner());
+    conn.execute(
+        "DELETE FROM coverage WHERE session_id = ?1",
+        rusqlite::params![SCRATCH_SESSION],
+    )
+    .map_err(|e| e.to_string())?;
+    conn.execute(
+        "DELETE FROM card_events WHERE session_id = ?1",
+        rusqlite::params![SCRATCH_SESSION],
+    )
+    .map_err(|e| e.to_string())?;
     live.dirty.store(true, Ordering::SeqCst);
+    Ok(())
 }
 
 #[tauri::command]
@@ -174,7 +194,9 @@ fn tick(app: &tauri::AppHandle) -> Result<(), String> {
     };
 
     let tick_start = Instant::now();
-    let conn = db.conn.lock().map_err(|e| e.to_string())?;
+    // Poison-tolerant, like the windows/engine locks: a one-off panic elsewhere
+    // must not permanently kill live matching.
+    let conn = db.conn.lock().unwrap_or_else(|p| p.into_inner());
 
     // ── Level 1: card selection from THEIR window ──
     let mut top: Vec<DebugCandidate> = Vec::new();
@@ -197,7 +219,17 @@ fn tick(app: &tauri::AppHandle) -> Result<(), String> {
                 card_id: m.card_id.clone(),
                 score: m
                     .vec_distance
-                    .map(|d| 1.0 - (d * d) / 2.0)
+                    .map(|d| {
+                        // cos = 1 − L2²/2 holds for unit vectors when d is the
+                        // (non-squared) Euclidean L2 — sqlite-vec's vec0 default.
+                        // Guard in debug builds against a future metric change:
+                        // L2 of two unit vectors is in [0, 2].
+                        debug_assert!(
+                            (0.0..=2.001).contains(&d),
+                            "unexpected vec distance {d}; is the vec0 metric still L2?"
+                        );
+                        1.0 - (d * d) / 2.0
+                    })
                     .unwrap_or(BM25_ONLY_SCORE),
             })
             .collect();

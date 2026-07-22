@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Manager};
 
-pub(crate) struct Db {
+pub struct Db {
     pub(crate) conn: Mutex<Connection>,
     path: PathBuf,
 }

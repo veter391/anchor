@@ -55,6 +55,7 @@ struct Running {
     handles: capture::CaptureHandles,
     stop_worker: std::sync::Arc<std::sync::atomic::AtomicBool>,
     worker: Option<std::thread::JoinHandle<()>>,
+    health: Option<std::thread::JoinHandle<()>>,
 }
 
 #[derive(Serialize, Clone)]
@@ -84,11 +85,13 @@ pub fn audio_status(audio: tauri::State<'_, AudioState>) -> bool {
 
 #[tauri::command]
 pub fn start_audio(app: tauri::AppHandle, audio: tauri::State<'_, AudioState>) -> Result<(), String> {
-    let mut guard = audio.running.lock().map_err(|e| e.to_string())?;
-    if guard.is_some() {
+    // Cheap running-check without holding the lock across the model load.
+    if audio.running.lock().map_err(|e| e.to_string())?.is_some() {
         return Ok(());
     }
 
+    // The ASR model load reads ~633 MB from disk over several seconds — do it
+    // BEFORE taking the state lock so stop/status stay responsive during start.
     let app_data = app.path().app_data_dir().map_err(|e| e.to_string())?;
     let model_dir = asr::model_dir(&app_data)
         .ok_or("no ASR model found — set ANCHOR_ASR_MODEL_DIR or install the model")?;
@@ -97,6 +100,11 @@ pub fn start_audio(app: tauri::AppHandle, audio: tauri::State<'_, AudioState>) -
         .unwrap_or(4)
         .min(8);
     let asr = Asr::load(&model_dir, threads)?;
+
+    let mut guard = audio.running.lock().map_err(|e| e.to_string())?;
+    if guard.is_some() {
+        return Ok(()); // lost a start/start race — drop the just-loaded model
+    }
 
     let (tx, rx) = std::sync::mpsc::channel::<AudioChunk>();
     let handles = capture::start(tx)?;
@@ -113,16 +121,17 @@ pub fn start_audio(app: tauri::AppHandle, audio: tauri::State<'_, AudioState>) -
         std::thread::spawn(move || worker_loop(app, asr, rx, stop, them_seen, me_seen))
     };
     // Health watchdog: warns when a channel goes quiet (wrong endpoint / earbuds).
-    {
+    let health = {
         let app = app.clone();
         let stop = stop_worker.clone();
-        std::thread::spawn(move || health_loop(app, stop, them_seen, me_seen));
-    }
+        std::thread::spawn(move || health_loop(app, stop, them_seen, me_seen))
+    };
 
     *guard = Some(Running {
         handles,
         stop_worker,
         worker: Some(worker),
+        health: Some(health),
     });
     let model = model_dir
         .file_name()
@@ -150,6 +159,11 @@ pub fn stop_audio(app: tauri::AppHandle, audio: tauri::State<'_, AudioState>) ->
         r.handles.stop(); // drops the capture tx → worker's rx closes
         if let Some(w) = r.worker.take() {
             let _ = w.join();
+        }
+        // Join the watchdog too, so stop_audio returns only once every thread
+        // is down — no stale health event can fire after stop or into a restart.
+        if let Some(h) = r.health.take() {
+            let _ = h.join();
         }
     }
     app.emit_to(
@@ -212,8 +226,16 @@ fn worker_loop(
                 // near-identical final. Feeding that to the ME window would mark
                 // bullets covered while the OTHER person is talking. Drop it from
                 // the engine (still show the partial). Full AEC is Phase 7.
+                //
+                // The age check is here, not only on push: a "them" final that
+                // is never followed by another would otherwise linger forever
+                // and wrongly flag a user answer that reuses the question's
+                // words minutes later.
                 let is_echo = speaker == "me"
-                    && recent_them.iter().any(|(_, t)| text_overlap(&text, t) >= ECHO_OVERLAP);
+                    && recent_them.iter().any(|(t, txt)| {
+                        now_ms.saturating_sub(*t) <= ECHO_WINDOW_MS
+                            && text_overlap(&text, txt) >= ECHO_OVERLAP
+                    });
 
                 if !is_echo {
                     // Same path the Phase-3 player used → the match engine ticks.
