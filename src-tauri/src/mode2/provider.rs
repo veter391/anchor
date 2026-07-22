@@ -21,6 +21,22 @@ pub trait Provider {
     fn name(&self) -> &'static str;
 }
 
+/// Bullet length modes (owner decision 2026-07-23): default = the current
+/// keyword-dense style (locked — the owner likes it); short = 1–2 words;
+/// long = slightly fuller. Shared by Mode-2 assembly and ingestion.
+pub fn style_rule(style: &str) -> &'static str {
+    match style {
+        "short" => "Each bullet is 1-2 words only — a bare keyword anchor.",
+        "long" => {
+            "Each bullet may run up to ~15 words — still keywords and facts, never prose sentences."
+        }
+        _ => {
+            "Each bullet is keyword-dense, ~10 words max: proper nouns, numbers, \
+             plus-signs, commas — fast to scan, never a full sentence."
+        }
+    }
+}
+
 /// The strict, grounding-first instruction and the assembled context. Kept
 /// as data so every provider sends the same thing.
 pub struct AssemblyPrompt {
@@ -30,6 +46,8 @@ pub struct AssemblyPrompt {
     /// empty). NOT the user's material — the model must mark bullets drawn
     /// from these with [K].
     pub bridges: Vec<String>,
+    /// Bullet length mode: "default" | "short" | "long" (see `style_rule`).
+    pub style: String,
     pub max_bullets: usize,
 }
 
@@ -42,8 +60,7 @@ impl AssemblyPrompt {
         format!(
             "You assemble a tiny cue card for someone speaking live under pressure.\n\
              Output up to {n} short keyword bullets, never full sentences, never prose to read aloud.\n\
-             Each bullet is under ~10 words: proper nouns, numbers, product names — the things \
-             that escape under pressure.\n\
+             {style}\n\
              RULE ZERO: every bullet must ANSWER the question just asked. Material that does not \
              address THIS question is off-limits — padding the card with unrelated notes is worse \
              than admitting the notes are silent.\n\
@@ -59,7 +76,8 @@ impl AssemblyPrompt {
              point marked [K] is good; a fabricated specific is never acceptable.\n\
              Return ONLY the structured result: a short title (the question, rephrased) and the \
              bullets.",
-            n = self.max_bullets
+            n = self.max_bullets,
+            style = style_rule(&self.style)
         )
     }
 

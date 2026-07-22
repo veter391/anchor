@@ -115,6 +115,57 @@ impl OpenAiCompat {
     }
 }
 
+impl OpenAiCompat {
+    /// Generic JSON completion (json_object mode — works on every preset).
+    /// Used by the ingestion card generator; Mode-2 assembly keeps the strict
+    /// schema path in `assemble`.
+    pub async fn complete_json(
+        &self,
+        system: &str,
+        user: &str,
+        max_tokens: u32,
+    ) -> Result<String, String> {
+        let mut body = json!({
+            "model": self.model,
+            "temperature": 0,
+            "messages": [
+                { "role": "system", "content": system },
+                { "role": "user", "content": user }
+            ],
+            "response_format": { "type": "json_object" },
+        });
+        match self.token_field {
+            TokenField::MaxTokens => body["max_tokens"] = json!(max_tokens),
+            TokenField::MaxCompletionTokens => body["max_completion_tokens"] = json!(max_tokens),
+        }
+
+        let mut req = self
+            .http
+            .post(format!("{}/chat/completions", self.base_url.trim_end_matches('/')))
+            .bearer_auth(&self.api_key)
+            .json(&body);
+        for (k, v) in &self.extra_headers {
+            req = req.header(k.as_str(), v.as_str());
+        }
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| format!("{} request failed: {e}", self.provider_name))?;
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        if !status.is_success() {
+            return Err(format!("{} {status}: {}", self.provider_name, truncate(&text, 300)));
+        }
+        let parsed: ChatResponse =
+            serde_json::from_str(&text).map_err(|e| format!("response parse: {e}"))?;
+        parsed
+            .choices
+            .first()
+            .map(|c| c.message.content.clone())
+            .ok_or_else(|| "empty choices".into())
+    }
+}
+
 #[derive(Deserialize)]
 struct ChatResponse {
     choices: Vec<Choice>,

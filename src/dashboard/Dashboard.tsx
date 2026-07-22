@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { LivePanel } from "./LivePanel";
 
@@ -41,6 +42,14 @@ interface QueryResult {
   top_card: CardRow | null;
 }
 
+interface GenerateReport {
+  markdown: string;
+  chunks: number;
+  cards: number;
+  warnings: string[];
+  imported: ImportReport | null;
+}
+
 const panel: React.CSSProperties = {
   background: "var(--bg)",
   border: "1px solid var(--border)",
@@ -57,6 +66,10 @@ export function Dashboard() {
   const [result, setResult] = useState<QueryResult | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [raw, setRaw] = useState("");
+  const [genInfo, setGenInfo] = useState<string | null>(null);
+  const [genProgress, setGenProgress] = useState<string | null>(null);
+  const [style, setStyle] = useState("default");
 
   const pollFails = useRef(0);
 
@@ -80,7 +93,16 @@ export function Dashboard() {
           if (pollFails.current === 3) setErr(`status polling failing: ${e}`);
         });
     }, 2000);
-    return () => clearInterval(t);
+    invoke<{ bullet_style: string }>("get_llm_config")
+      .then((c) => setStyle(c.bullet_style))
+      .catch(() => {});
+    const unGen = listen<{ done: number; total: number }>("ingest:progress", (e) =>
+      setGenProgress(`part ${e.payload.done}/${e.payload.total}`),
+    );
+    return () => {
+      clearInterval(t);
+      unGen.then((f) => f()).catch(() => {});
+    };
   }, [refresh]);
 
   const doImport = async () => {
@@ -109,6 +131,34 @@ export function Dashboard() {
       setErr(String(e));
     } finally {
       setBusy(null);
+    }
+  };
+
+  const doGenerate = async (auto: boolean) => {
+    setBusy(auto ? "generating + importing…" : "generating drafts…");
+    setErr(null);
+    setGenInfo(null);
+    try {
+      const r = await invoke<GenerateReport>("generate_cards", { text: raw, auto });
+      if (auto) {
+        setGenInfo(
+          `generated ${r.cards} card(s) from ${r.chunks} part(s) — imported into the corpus` +
+            (r.warnings.length ? ` · ${r.warnings.length} part(s) skipped` : ""),
+        );
+        setRaw("");
+        refresh();
+      } else {
+        setMd(r.markdown);
+        setGenInfo(
+          `generated ${r.cards} draft card(s) from ${r.chunks} part(s) — review below, then Import` +
+            (r.warnings.length ? ` · ${r.warnings.length} part(s) skipped` : ""),
+        );
+      }
+    } catch (e) {
+      setErr(String(e));
+    } finally {
+      setBusy(null);
+      setGenProgress(null);
     }
   };
 
@@ -231,6 +281,79 @@ export function Dashboard() {
       </section>
 
       <LivePanel />
+
+      <section style={panel}>
+        <h3 style={{ margin: "0 0 8px", fontSize: 13, color: "var(--text-muted)" }}>
+          GENERATE CARDS — paste raw material, Anchor structures it
+        </h3>
+        <p style={{ color: "var(--text-muted)", fontSize: 12, marginTop: 0 }}>
+          Drop your study notes as-is — no formatting needed. The engine turns
+          them into draft anchor cards: review them in the import box below, or
+          import automatically.
+        </p>
+        <textarea
+          value={raw}
+          onChange={(e) => setRaw(e.target.value)}
+          rows={7}
+          placeholder={
+            "Paste the material you studied — meeting notes, a doc, a knowledge base dump…"
+          }
+          style={{
+            width: "100%",
+            boxSizing: "border-box",
+            background: "var(--bg-elevated)",
+            border: "1px solid var(--border)",
+            borderRadius: 6,
+            color: "var(--text)",
+            padding: 10,
+            fontSize: 13,
+          }}
+        />
+        <div style={{ marginTop: 8, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <button
+            onClick={() => doGenerate(false)}
+            disabled={!raw.trim() || busy !== null}
+            style={btn}
+          >
+            Generate drafts
+          </button>
+          <button
+            onClick={() => doGenerate(true)}
+            disabled={!raw.trim() || busy !== null}
+            style={btn}
+          >
+            Generate &amp; import
+          </button>
+          <label style={{ color: "var(--text-muted)", fontSize: 12 }}>
+            Bullet length
+            <select
+              value={style}
+              onChange={(e) => {
+                setStyle(e.target.value);
+                invoke("set_llm_config", { bulletStyle: e.target.value }).catch(() => {});
+              }}
+              style={{
+                marginLeft: 6,
+                background: "var(--bg-elevated)",
+                color: "var(--text)",
+                border: "1px solid var(--border)",
+                borderRadius: 6,
+                padding: "4px 8px",
+              }}
+            >
+              <option value="default">Recommended</option>
+              <option value="short">Short (1-2 words)</option>
+              <option value="long">Longer</option>
+            </select>
+          </label>
+          {genProgress && (
+            <span style={{ color: "var(--assembled)", fontSize: 12 }}>{genProgress}</span>
+          )}
+        </div>
+        {genInfo && (
+          <div style={{ marginTop: 8, fontSize: 12, color: "var(--assembled)" }}>{genInfo}</div>
+        )}
+      </section>
 
       <section style={panel}>
         <h3 style={{ margin: "0 0 8px", fontSize: 13, color: "var(--text-muted)" }}>

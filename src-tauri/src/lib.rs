@@ -5,6 +5,7 @@ pub mod audio;
 pub mod cards;
 pub mod db;
 pub mod embed;
+pub mod ingest;
 pub mod live;
 pub mod matcher;
 pub mod mode2;
@@ -252,6 +253,7 @@ struct LlmConfig {
     api_provider: String,
     api_model: Option<String>,
     api_key_set: bool,
+    bullet_style: String,
 }
 
 fn setting_get(conn: &Connection, key: &str) -> Option<String> {
@@ -289,6 +291,7 @@ fn get_llm_config(db: tauri::State<'_, Db>) -> Result<LlmConfig, String> {
         api_provider: api_provider.clone(),
         api_model: setting_get(&conn, "llm_model"),
         api_key_set: mode2::keyring_has(&api_provider),
+        bullet_style: setting_get(&conn, "bullet_style").unwrap_or_else(|| "default".into()),
     })
 }
 
@@ -300,6 +303,7 @@ fn set_llm_config(
     api_provider: Option<String>,
     api_model: Option<String>,
     custom_url: Option<String>,
+    bullet_style: Option<String>,
 ) -> Result<(), String> {
     let conn = db.conn.lock().map_err(|e| e.to_string())?;
     if let Some(m) = mode {
@@ -317,7 +321,69 @@ fn set_llm_config(
     if let Some(u) = custom_url {
         setting_set(&conn, "llm_custom_url", &u)?;
     }
+    if let Some(s) = bullet_style {
+        setting_set(&conn, "bullet_style", &s)?;
+    }
     Ok(())
+}
+
+#[derive(serde::Serialize)]
+struct GenerateReport {
+    markdown: String,
+    chunks: usize,
+    cards: usize,
+    warnings: Vec<String>,
+    imported: Option<store::ImportReport>,
+}
+
+#[derive(serde::Serialize, Clone)]
+struct IngestProgress {
+    done: usize,
+    total: usize,
+}
+
+/// Raw material → draft cards via the configured LLM engine. `auto: false`
+/// returns the drafts (markdown) for review in the import box; `auto: true`
+/// imports them straight into the corpus (owner decision: hybrid).
+#[tauri::command]
+async fn generate_cards(
+    app: tauri::AppHandle,
+    text: String,
+    auto: bool,
+) -> Result<GenerateReport, String> {
+    // Snapshot provider + style under a short lock — generation is long and
+    // must never hold the DB.
+    let (choice, style) = {
+        let db = app.state::<Db>();
+        let conn = db.conn.lock().map_err(|e| e.to_string())?;
+        let choice = live::resolve_provider(&app, &conn).ok_or(
+            "no engine configured — download a local model or add an API key in settings",
+        )?;
+        let style = setting_get(&conn, "bullet_style").unwrap_or_else(|| "default".into());
+        (choice, style)
+    };
+
+    let app2 = app.clone();
+    let report = ingest::generate_drafts(&choice, &text, &style, move |done, total| {
+        app2.emit_to("dashboard", "ingest:progress", IngestProgress { done, total })
+            .ok();
+    })
+    .await?;
+
+    let imported = if auto {
+        let db = app.state::<Db>();
+        let embedder = app.state::<Arc<Embedder>>();
+        Some(import_markdown(&db, &embedder, &report.markdown, "en")?)
+    } else {
+        None
+    };
+    Ok(GenerateReport {
+        markdown: report.markdown,
+        chunks: report.chunks,
+        cards: report.cards,
+        warnings: report.warnings,
+        imported,
+    })
 }
 
 #[tauri::command]
@@ -396,6 +462,7 @@ pub fn run() {
             delete_model,
             get_llm_config,
             set_llm_config,
+            generate_cards,
             set_api_key
         ])
         .setup(move |app| {

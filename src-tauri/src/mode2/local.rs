@@ -39,7 +39,7 @@ pub struct LocalEngine {
 
 impl LocalEngine {
     /// Ensures `id` (at `path`) is the loaded model; loads/swaps if needed.
-    fn ensure(&self, id: &str, path: &Path) -> Result<(), String> {
+    pub fn ensure(&self, id: &str, path: &Path) -> Result<(), String> {
         let mut guard = self.loaded.lock().map_err(|e| e.to_string())?;
         if guard.as_ref().map(|l| l.id.as_str()) == Some(id) {
             return Ok(());
@@ -63,23 +63,31 @@ impl LocalEngine {
 
     /// Blocking generation from already-owned prompt text (safe to call inside
     /// spawn_blocking). The model must already be loaded via `ensure`.
+    fn generate(&self, sys: &str, user: &str) -> Result<RawAssembly, String> {
+        let sys = format!(
+            "{sys}\nReturn ONLY a JSON object: {{\"title\": \"...\", \"points\": [\"...\"]}}"
+        );
+        let out = self.complete(&sys, user, 220)?;
+        parse_assembly(&out)
+    }
+
+    /// Raw blocking completion: chat template + /no_think, plain text out.
+    /// Shared by Mode-2 assembly and the ingestion card generator.
     // token_to_str/Special::Tokenize are deprecated in favour of token_to_piece
     // (which needs an encoding_rs decoder); the simple path is fine for our
     // short, single-shot generations.
     #[allow(deprecated, clippy::explicit_counter_loop)]
-    fn generate(&self, sys: &str, user: &str) -> Result<RawAssembly, String> {
+    pub fn complete(&self, sys: &str, user: &str, max_tokens: usize) -> Result<String, String> {
         let guard = self.loaded.lock().map_err(|e| e.to_string())?;
         let model = &guard.as_ref().ok_or("no local model loaded")?.model;
 
         let tmpl = model.chat_template(None).ok();
         // /no_think suppresses reasoning models' <think> dumps.
-        let sys = format!(
-            "{sys}\n/no_think\nReturn ONLY a JSON object: {{\"title\": \"...\", \"points\": [\"...\"]}}"
-        );
+        let sys = format!("{sys}\n/no_think");
         let text = build_prompt(model, tmpl.as_ref(), &sys, user)?;
 
         let ctx_params = LlamaContextParams::default()
-            .with_n_ctx(NonZeroU32::new(2048))
+            .with_n_ctx(NonZeroU32::new(4096))
             .with_n_threads(4)
             .with_n_threads_batch(4);
         let mut ctx = model
@@ -89,7 +97,7 @@ impl LocalEngine {
         let tokens = model
             .str_to_token(&text, AddBos::Always)
             .map_err(|e| e.to_string())?;
-        let mut batch = LlamaBatch::new(2048, 1);
+        let mut batch = LlamaBatch::new(4096, 1);
         let last = tokens.len().saturating_sub(1);
         for (i, tok) in tokens.iter().enumerate() {
             batch
@@ -102,7 +110,7 @@ impl LocalEngine {
         ctx.decode(&mut batch).map_err(|e| e.to_string())?;
         let mut out = String::new();
         let mut n_cur = batch.n_tokens();
-        for _ in 0..220 {
+        for _ in 0..max_tokens {
             let tok = sampler.sample(&ctx, batch.n_tokens() - 1);
             sampler.accept(tok);
             if model.is_eog_token(tok) {
@@ -115,7 +123,7 @@ impl LocalEngine {
             ctx.decode(&mut batch).map_err(|e| e.to_string())?;
         }
 
-        parse_assembly(&out)
+        Ok(out)
     }
 }
 
@@ -191,7 +199,7 @@ fn parse_assembly(out: &str) -> Result<RawAssembly, String> {
     Ok(RawAssembly { title, bullets })
 }
 
-fn extract_json(s: &str) -> Option<String> {
+pub fn extract_json(s: &str) -> Option<String> {
     let start = s.find('{')?;
     let mut depth = 0;
     for (i, c) in s[start..].char_indices() {

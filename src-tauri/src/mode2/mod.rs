@@ -215,6 +215,7 @@ pub async fn assemble(
     embedder: &Embedder,
     material: &Material,
     question: &str,
+    style: &str,
 ) -> Result<AssembledCard, String> {
     // One question embedding, reused by the fallback-KB selection here and
     // the relevance gate after generation.
@@ -230,6 +231,7 @@ pub async fn assemble(
         question: question.to_string(),
         material: material_text,
         bridges,
+        style: style.to_string(),
         max_bullets: MAX_BULLETS,
     };
 
@@ -316,6 +318,50 @@ pub async fn assemble(
         .iter()
         .any(|b| b.provenance == Provenance::ModelKnowledge);
     Ok(card)
+}
+
+/// Generic completion on whichever provider is configured. Used by the
+/// ingestion card generator; Mode-2 assembly keeps its dedicated path.
+/// Returns raw model text (JSON expected inside; caller extracts).
+pub async fn complete(
+    choice: &ProviderChoice,
+    system: String,
+    user: String,
+    max_tokens: usize,
+) -> Result<String, String> {
+    match choice {
+        ProviderChoice::Api {
+            provider,
+            api_key,
+            model,
+            custom_base_url,
+        } => {
+            let compat = if provider == "custom" {
+                let base = custom_base_url.clone().ok_or("custom provider needs a base URL")?;
+                openai_compat::OpenAiCompat::custom(
+                    base,
+                    api_key.clone(),
+                    model.clone().unwrap_or_default(),
+                )
+            } else {
+                openai_compat::OpenAiCompat::preset(provider, api_key.clone(), model.clone())
+            };
+            compat.complete_json(&system, &user, max_tokens as u32).await
+        }
+        ProviderChoice::Local {
+            engine,
+            model_id,
+            model_path,
+        } => {
+            engine.ensure(model_id, model_path)?;
+            let engine = engine.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                engine.complete(&system, &user, max_tokens)
+            })
+            .await
+            .map_err(|e| format!("local completion task failed: {e}"))?
+        }
+    }
 }
 
 // ── API key storage in the OS keyring (never our DB) ────────────────

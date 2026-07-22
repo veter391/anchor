@@ -413,6 +413,13 @@ fn maybe_assemble(
         Some(c) => c,
         None => return, // no provider configured — stay on the panic card
     };
+    let style = conn
+        .query_row(
+            "SELECT value FROM settings WHERE key = 'bullet_style'",
+            [],
+            |r| r.get::<_, String>(0),
+        )
+        .unwrap_or_else(|_| "default".to_string());
 
     // Gather the user's material (all prepared bullets) while we hold the lock.
     let material = match gather_material(conn) {
@@ -436,7 +443,7 @@ fn maybe_assemble(
     // Off the ticker thread: network + embedding, then emit the result.
     tauri::async_runtime::spawn(async move {
         let result =
-            crate::mode2::assemble(&choice, &embedder, &material, &question).await;
+            crate::mode2::assemble(&choice, &embedder, &material, &question, &style).await;
         let live = app2.state::<LiveState>();
         match result {
             Ok(card) => {
@@ -455,7 +462,7 @@ fn maybe_assemble(
 /// Provider from settings. `llm_mode` = "local" (default, free) or "api".
 /// Local uses the active downloaded model; API pulls its key from the OS
 /// keyring (never our DB — OWNER-RULES).
-fn resolve_provider(
+pub(crate) fn resolve_provider(
     app: &tauri::AppHandle,
     conn: &rusqlite::Connection,
 ) -> Option<crate::mode2::ProviderChoice> {
