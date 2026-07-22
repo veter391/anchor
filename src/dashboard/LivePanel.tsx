@@ -58,21 +58,52 @@ function lineDelayMs(line: string): number {
   return Math.max(700, (words / 2.5) * 1000);
 }
 
+interface PartialEvent {
+  speaker: "them" | "me";
+  text: string;
+  final_: boolean;
+}
+
 export function LivePanel() {
   const [script, setScript] = useState(SAMPLE);
   const [playing, setPlaying] = useState(false);
   const [progress, setProgress] = useState<string | null>(null);
   const [debug, setDebug] = useState<DebugState | null>(null);
   const [th, setTh] = useState<Thresholds | null>(null);
+  const [audioOn, setAudioOn] = useState(false);
+  const [audioErr, setAudioErr] = useState<string | null>(null);
+  const [themPartial, setThemPartial] = useState("");
+  const [mePartial, setMePartial] = useState("");
   const stopRef = useRef(false);
 
   useEffect(() => {
     invoke<Thresholds>("get_thresholds").then(setTh).catch(() => {});
-    const un = listen<DebugState>("match:debug", (e) => setDebug(e.payload));
+    invoke<boolean>("audio_status").then(setAudioOn).catch(() => {});
+    const unDebug = listen<DebugState>("match:debug", (e) => setDebug(e.payload));
+    const unPartial = listen<PartialEvent>("asr:partial", (e) => {
+      const setter = e.payload.speaker === "them" ? setThemPartial : setMePartial;
+      setter(e.payload.text);
+    });
     return () => {
-      un.then((f) => f()).catch(() => {});
+      unDebug.then((f) => f()).catch(() => {});
+      unPartial.then((f) => f()).catch(() => {});
     };
   }, []);
+
+  const toggleAudio = async () => {
+    setAudioErr(null);
+    try {
+      if (audioOn) {
+        await invoke("stop_audio");
+        setAudioOn(false);
+      } else {
+        await invoke("start_audio");
+        setAudioOn(true);
+      }
+    } catch (e) {
+      setAudioErr(String(e));
+    }
+  };
 
   const play = async () => {
     setPlaying(true);
@@ -107,6 +138,44 @@ export function LivePanel() {
 
   return (
     <>
+      <section style={panel}>
+        <h3 style={{ margin: "0 0 8px", fontSize: 13, color: "var(--text-muted)" }}>
+          LIVE AUDIO — Phase 4 (mic = you, system audio = them)
+        </h3>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <button
+            onClick={toggleAudio}
+            style={{
+              ...btn,
+              borderColor: audioOn ? "var(--red)" : "var(--accent)",
+              color: audioOn ? "var(--red)" : "var(--accent)",
+            }}
+          >
+            {audioOn ? "■ Stop listening" : "● Start listening"}
+          </button>
+          <span style={{ color: "var(--text-muted)", fontSize: 12 }}>
+            {audioOn
+              ? "listening — speak, or play a call in another app"
+              : "off"}
+          </span>
+        </div>
+        {audioErr && (
+          <div style={{ color: "var(--red)", fontSize: 12, marginTop: 6 }}>{audioErr}</div>
+        )}
+        {audioOn && (
+          <div style={{ marginTop: 8, display: "grid", gap: 4, ...mono }}>
+            <div>
+              <span style={{ color: "var(--text-muted)" }}>them ▸ </span>
+              <span style={{ color: "var(--accent)" }}>{themPartial || "…"}</span>
+            </div>
+            <div>
+              <span style={{ color: "var(--text-muted)" }}>me &nbsp;&nbsp;▸ </span>
+              <span style={{ color: "var(--text-soft)" }}>{mePartial || "…"}</span>
+            </div>
+          </div>
+        )}
+      </section>
+
       <section style={panel}>
         <h3 style={{ margin: "0 0 8px", fontSize: 13, color: "var(--text-muted)" }}>
           TRANSCRIPT PLAYER — Phase 3 (them: / me: lines, played at speaking pace)

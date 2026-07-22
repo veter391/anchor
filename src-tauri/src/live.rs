@@ -56,11 +56,20 @@ pub fn feed_transcript(
     speaker: String,
     text: String,
 ) -> Result<(), String> {
+    feed_transcript_internal(&live, &speaker, &text)
+}
+
+/// Shared entry point for both the manual command and the audio worker.
+pub fn feed_transcript_internal(
+    live: &LiveState,
+    speaker: &str,
+    text: &str,
+) -> Result<(), String> {
     let mut w = lock_or_recover(&live.windows);
     let ts_ms = w.origin.elapsed().as_millis() as u64;
-    match speaker.as_str() {
-        "them" => w.them.push(ts_ms, text),
-        "me" => w.me.push(ts_ms, text),
+    match speaker {
+        "them" => w.them.push(ts_ms, text.to_string()),
+        "me" => w.me.push(ts_ms, text.to_string()),
         other => return Err(format!("unknown speaker: {other}")),
     }
     live.dirty.store(true, Ordering::SeqCst);

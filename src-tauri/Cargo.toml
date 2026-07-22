@@ -20,8 +20,16 @@ sqlite-vec = "0.1.9"
 fastembed = "5"
 uuid = { version = "1", features = ["v4"] }
 anyhow = "1"
+# Audio (Phase 4). sherpa-onnx as a DLL so its bundled ONNX Runtime does not
+# clash with fastembed's static `ort` (LNK2005 otherwise — proven in Phase 0).
+sherpa-onnx = { version = "1.13.4", default-features = false, features = ["shared"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[target.'cfg(windows)'.dependencies]
+# Both channels via wasapi (loopback for "them", capture for "me"): one audio
+# crate, one windows version. cpal 0.18 clashes with Tauri's windows stack.
+wasapi = "0.23"
 
 [profile.release]
 opt-level = 2

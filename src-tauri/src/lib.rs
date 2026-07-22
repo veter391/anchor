@@ -1,6 +1,7 @@
 // Anchor — live notes overlay. Prepared, not prompted.
 // Phase 2 (+review fixes): corpus import, local embeddings, hybrid retrieval.
 
+pub mod audio;
 pub mod cards;
 pub mod db;
 pub mod embed;
@@ -226,6 +227,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(overlay_input::Zones::default())
         .manage(live::LiveState::default())
+        .manage(audio::AudioState::default())
         .manage(embedder.clone())
         .invoke_handler(tauri::generate_handler![
             boot_info,
@@ -240,7 +242,10 @@ pub fn run() {
             live::feed_transcript,
             live::reset_live,
             live::set_thresholds,
-            live::get_thresholds
+            live::get_thresholds,
+            audio::audio_status,
+            audio::start_audio,
+            audio::stop_audio
         ])
         .setup(move |app| {
             let data_dir = app.path().app_data_dir()?;
