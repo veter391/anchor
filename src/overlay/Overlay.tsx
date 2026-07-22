@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { Card, type CardData, type BulletState } from "./Card";
+import { Card, type CardData, type BulletState, type CardSource } from "./Card";
 
 interface CardRow {
   id: string;
@@ -10,25 +10,39 @@ interface CardRow {
   bullets: string[];
 }
 
+interface CoverageUpdate {
+  card_id: string;
+  covered: boolean[];
+}
+
 const EMPTY_STATE: CardData = {
   title: "Anchor — waiting for a card",
   source: "prepared",
   bullets: [
     { text: "Import cards in the dashboard", state: "next" },
-    { text: "Type a question in the query box", state: "uncovered" },
+    { text: "Feed or play a transcript", state: "uncovered" },
     { text: "The right card appears here", state: "uncovered" },
   ],
 };
 
-function toCardData(row: CardRow): CardData {
+/** Coverage → visual states: covered dims, first uncovered is NEXT. */
+function withCoverage(row: CardRow, covered: boolean[]): CardData {
+  let nextAssigned = false;
   return {
     title: row.title,
-    source: (row.source as CardData["source"]) ?? "prepared",
-    bullets: row.bullets.map((text, i) => ({
-      text,
-      // Coverage arrives in Phase 3; until then the first bullet is "next".
-      state: (i === 0 ? "next" : "uncovered") as BulletState,
-    })),
+    source: (row.source as CardSource) ?? "prepared",
+    bullets: row.bullets.map((text, i) => {
+      let state: BulletState;
+      if (covered[i]) {
+        state = "covered";
+      } else if (!nextAssigned) {
+        state = "next";
+        nextAssigned = true;
+      } else {
+        state = "uncovered";
+      }
+      return { text, state };
+    }),
   };
 }
 
@@ -62,20 +76,36 @@ function useInteractiveZone(
 
 export function Overlay() {
   const cardRef = useRef<HTMLDivElement | null>(null);
-  const [card, setCard] = useState<CardData>(EMPTY_STATE);
-  useInteractiveZone(cardRef, card.title);
+  const [row, setRow] = useState<CardRow | null>(null);
+  const [covered, setCovered] = useState<boolean[]>([]);
+  const rowIdRef = useRef<string | null>(null);
+  useInteractiveZone(cardRef, row?.id ?? "empty");
 
   useEffect(() => {
-    const un = listen<CardRow>("card:show", (e) => setCard(toCardData(e.payload)));
+    const unShow = listen<CardRow>("card:show", (e) => {
+      rowIdRef.current = e.payload.id;
+      setRow(e.payload);
+      setCovered([]);
+    });
+    // A coverage event can race a jump inside one tick; the payload's
+    // card_id makes sure stale coverage never lands on the wrong card.
+    const unCov = listen<CoverageUpdate>("coverage:update", (e) => {
+      if (e.payload.card_id === rowIdRef.current) {
+        setCovered(e.payload.covered);
+      }
+    });
     return () => {
-      un.then((f) => f()).catch(() => {});
+      unShow.then((f) => f()).catch(() => {});
+      unCov.then((f) => f()).catch(() => {});
     };
   }, []);
+
+  const card = row ? withCoverage(row, covered) : EMPTY_STATE;
 
   return (
     <div style={{ padding: 6 }}>
       {/* key change restarts the 120 ms card fade */}
-      <Card key={card.title} ref={cardRef} card={card} />
+      <Card key={row?.id ?? "empty"} ref={cardRef} card={card} />
     </div>
   );
 }

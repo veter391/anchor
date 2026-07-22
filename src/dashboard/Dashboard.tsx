@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
+import { LivePanel } from "./LivePanel";
 
 interface BootInfo {
   db_path: string;
@@ -228,6 +229,8 @@ export function Dashboard() {
           </table>
         )}
       </section>
+
+      <LivePanel />
 
       <section style={panel}>
         <h3 style={{ margin: "0 0 8px", fontSize: 13, color: "var(--text-muted)" }}>

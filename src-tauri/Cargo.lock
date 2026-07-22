@@ -78,6 +78,7 @@ dependencies = [
  "fastembed",
  "rusqlite",
  "serde",
+ "serde_json",
  "sqlite-vec",
  "tauri",
  "tauri-build",

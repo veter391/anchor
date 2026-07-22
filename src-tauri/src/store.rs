@@ -166,6 +166,38 @@ pub fn get_card(conn: &Connection, card_id: &str) -> Result<Option<CardRow>, Str
         .map_err(|e| e.to_string())
 }
 
+/// Bullet embeddings of one card, in display order, decoded to f32.
+/// Used by Level-2 coverage: cosine(ME window, each bullet).
+pub fn bullet_vectors_for_card(
+    conn: &Connection,
+    card_id: &str,
+) -> Result<Vec<(String, Vec<f32>)>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT b.id, v.embedding FROM bullets b
+             JOIN bullet_vec v ON v.bullet_id = b.id
+             WHERE b.card_id = ?1 ORDER BY b.position",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![card_id], |r| {
+            let id: String = r.get(0)?;
+            let blob: Vec<u8> = r.get(1)?;
+            Ok((id, blob))
+        })
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for row in rows {
+        let (id, blob) = row.map_err(|e| e.to_string())?;
+        let vec = blob
+            .chunks_exact(4)
+            .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+            .collect();
+        out.push((id, vec));
+    }
+    Ok(out)
+}
+
 /// Deletes one card; bullets cascade via FK, derived FTS/vec rows via triggers.
 pub fn delete_card(conn: &Connection, card_id: &str) -> Result<(), String> {
     conn.execute("DELETE FROM cards WHERE id = ?1", params![card_id])

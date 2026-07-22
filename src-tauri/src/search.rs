@@ -8,8 +8,16 @@ use rusqlite::{params, Connection};
 use serde::Serialize;
 use std::collections::HashMap;
 
-const RRF_K: f64 = 60.0;
+pub const RRF_K: f64 = 60.0;
 const LEG_LIMIT: usize = 10;
+
+/// Highest possible fused score: rank 1 in both legs.
+pub const MAX_FUSED: f64 = 2.0 / (RRF_K + 1.0);
+
+/// Normalizes an RRF fused score to [0, 1] for threshold comparisons.
+pub fn normalize_fused(fused: f64) -> f64 {
+    (fused / MAX_FUSED).clamp(0.0, 1.0)
+}
 
 #[derive(Debug, Serialize, Clone)]
 pub struct Match {

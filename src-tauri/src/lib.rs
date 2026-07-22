@@ -4,6 +4,8 @@
 pub mod cards;
 pub mod db;
 pub mod embed;
+pub mod live;
+pub mod matcher;
 pub mod overlay_input;
 pub mod search;
 pub mod store;
@@ -14,8 +16,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Manager};
 
-struct Db {
-    conn: Mutex<Connection>,
+pub(crate) struct Db {
+    pub(crate) conn: Mutex<Connection>,
     path: PathBuf,
 }
 
@@ -223,6 +225,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(overlay_input::Zones::default())
+        .manage(live::LiveState::default())
         .manage(embedder.clone())
         .invoke_handler(tauri::generate_handler![
             boot_info,
@@ -233,7 +236,11 @@ pub fn run() {
             wipe_corpus,
             query_cards,
             fit_overlay_height,
-            overlay_input::set_interactive_zones
+            overlay_input::set_interactive_zones,
+            live::feed_transcript,
+            live::reset_live,
+            live::set_thresholds,
+            live::get_thresholds
         ])
         .setup(move |app| {
             let data_dir = app.path().app_data_dir()?;
@@ -247,11 +254,13 @@ pub fn run() {
             // corrupts retrieval invisibly.
             db::check_embedding_compat(&conn, embed::MODEL_ID, embed::DIMS as i64)
                 .map_err(std::io::Error::other)?;
+            live::ensure_scratch_session(&conn)?;
             tracing::info!(path = %db_path.display(), dims, "database ready");
             app.manage(Db {
                 conn: Mutex::new(conn),
                 path: db_path,
             });
+            live::spawn_ticker(app.handle().clone());
 
             // Pre-warm the embedding model off-thread (first run downloads it).
             let warm = embedder.clone();
