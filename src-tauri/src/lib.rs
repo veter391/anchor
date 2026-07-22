@@ -7,6 +7,7 @@ pub mod db;
 pub mod embed;
 pub mod live;
 pub mod matcher;
+pub mod mode2;
 pub mod overlay_input;
 pub mod search;
 pub mod store;
@@ -178,6 +179,157 @@ fn query_cards(
     Ok(QueryResult { matches, top_card })
 }
 
+// ── Mode-2 config: local models + API providers ─────────────────────
+
+#[derive(serde::Serialize)]
+struct ModelRow {
+    id: String,
+    name: String,
+    tagline: String,
+    size_bytes: u64,
+    licence: String,
+    is_default: bool,
+    installed: bool,
+}
+
+#[tauri::command]
+fn list_models(app: tauri::AppHandle) -> Result<Vec<ModelRow>, String> {
+    let app_data = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    Ok(mode2::models::REGISTRY
+        .iter()
+        .map(|m| ModelRow {
+            id: m.id.into(),
+            name: m.name.into(),
+            tagline: m.tagline.into(),
+            size_bytes: m.size_bytes,
+            licence: m.licence.into(),
+            is_default: m.is_default,
+            installed: mode2::models::is_installed(&app_data, m),
+        })
+        .collect())
+}
+
+#[derive(serde::Serialize, Clone)]
+struct DownloadProgress {
+    id: String,
+    downloaded: u64,
+    total: u64,
+}
+
+#[tauri::command]
+async fn download_model(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    let info = mode2::models::find(&id).ok_or("unknown model id")?;
+    let app_data = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let app2 = app.clone();
+    let id2 = id.clone();
+    mode2::models::download(&app_data, info, move |downloaded, total| {
+        app2.emit_to(
+            "dashboard",
+            "model:progress",
+            DownloadProgress {
+                id: id2.clone(),
+                downloaded,
+                total,
+            },
+        )
+        .ok();
+    })
+    .await?;
+    app.emit_to("dashboard", "model:done", &id).ok();
+    Ok(())
+}
+
+#[tauri::command]
+fn delete_model(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    let app_data = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    mode2::models::delete(&app_data, &id)
+}
+
+#[derive(serde::Serialize)]
+struct LlmConfig {
+    mode: String,
+    local_model: String,
+    api_provider: String,
+    api_model: Option<String>,
+    api_key_set: bool,
+}
+
+fn setting_get(conn: &Connection, key: &str) -> Option<String> {
+    conn.query_row(
+        "SELECT value FROM settings WHERE key = ?1",
+        [key],
+        |r| r.get::<_, String>(0),
+    )
+    .ok()
+}
+
+fn setting_set(conn: &Connection, key: &str, value: &str) -> Result<(), String> {
+    conn.execute(
+        "INSERT INTO settings (key, value) VALUES (?1, ?2)
+         ON CONFLICT(key) DO UPDATE SET value = ?2",
+        [key, value],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn get_llm_config(db: tauri::State<'_, Db>) -> Result<LlmConfig, String> {
+    let conn = db.conn.lock().map_err(|e| e.to_string())?;
+    let mode = setting_get(&conn, "llm_mode").unwrap_or_else(|| "local".into());
+    let default_model = mode2::models::REGISTRY
+        .iter()
+        .find(|m| m.is_default)
+        .map(|m| m.id.to_string())
+        .unwrap_or_default();
+    let api_provider = setting_get(&conn, "llm_provider").unwrap_or_else(|| "openrouter".into());
+    Ok(LlmConfig {
+        mode,
+        local_model: setting_get(&conn, "local_model").unwrap_or(default_model),
+        api_provider: api_provider.clone(),
+        api_model: setting_get(&conn, "llm_model"),
+        api_key_set: mode2::keyring_has(&api_provider),
+    })
+}
+
+#[tauri::command]
+fn set_llm_config(
+    db: tauri::State<'_, Db>,
+    mode: Option<String>,
+    local_model: Option<String>,
+    api_provider: Option<String>,
+    api_model: Option<String>,
+    custom_url: Option<String>,
+) -> Result<(), String> {
+    let conn = db.conn.lock().map_err(|e| e.to_string())?;
+    if let Some(m) = mode {
+        setting_set(&conn, "llm_mode", &m)?;
+    }
+    if let Some(m) = local_model {
+        setting_set(&conn, "local_model", &m)?;
+    }
+    if let Some(p) = api_provider {
+        setting_set(&conn, "llm_provider", &p)?;
+    }
+    if let Some(m) = api_model {
+        setting_set(&conn, "llm_model", &m)?;
+    }
+    if let Some(u) = custom_url {
+        setting_set(&conn, "llm_custom_url", &u)?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn set_api_key(provider: String, key: String) -> Result<(), String> {
+    if key.trim().is_empty() {
+        mode2::keyring_delete(&provider).ok();
+        Ok(())
+    } else {
+        mode2::keyring_set(&provider, key.trim())
+    }
+}
+
 /// The overlay reports its content height (logical px) so the window can
 /// grow for wrapping bullets instead of clipping them.
 #[tauri::command]
@@ -210,16 +362,7 @@ pub fn run() {
         .init();
 
     // sqlite-vec must be registered before any connection opens.
-    type ExtInit = unsafe extern "C" fn(
-        *mut rusqlite::ffi::sqlite3,
-        *mut *mut std::os::raw::c_char,
-        *const rusqlite::ffi::sqlite3_api_routines,
-    ) -> std::os::raw::c_int;
-    unsafe {
-        rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute::<*const (), ExtInit>(
-            sqlite_vec::sqlite3_vec_init as *const (),
-        )));
-    }
+    db::register_vec_extension();
 
     let embedder = Arc::new(Embedder::new());
 
@@ -228,6 +371,7 @@ pub fn run() {
         .manage(overlay_input::Zones::default())
         .manage(live::LiveState::default())
         .manage(audio::AudioState::default())
+        .manage(std::sync::Arc::new(mode2::local::LocalEngine::default()))
         .manage(embedder.clone())
         .invoke_handler(tauri::generate_handler![
             boot_info,
@@ -243,9 +387,16 @@ pub fn run() {
             live::reset_live,
             live::set_thresholds,
             live::get_thresholds,
+            live::panic_now,
             audio::audio_status,
             audio::start_audio,
-            audio::stop_audio
+            audio::stop_audio,
+            list_models,
+            download_model,
+            delete_model,
+            get_llm_config,
+            set_llm_config,
+            set_api_key
         ])
         .setup(move |app| {
             let data_dir = app.path().app_data_dir()?;

@@ -22,6 +22,11 @@ pub struct LiveState {
     windows: Mutex<Windows>,
     pub engine: Mutex<MatchEngine>,
     dirty: AtomicBool,
+    /// Mode-2 debounce: true while an assembly is in flight, plus the
+    /// question text we last assembled for (so we don't re-fire every tick
+    /// while the same unmatched question sits in the window).
+    mode2_inflight: AtomicBool,
+    mode2_last_q: Mutex<String>,
 }
 
 struct Windows {
@@ -40,6 +45,8 @@ impl Default for LiveState {
             }),
             engine: Mutex::new(MatchEngine::new(Thresholds::default())),
             dirty: AtomicBool::new(false),
+            mode2_inflight: AtomicBool::new(false),
+            mode2_last_q: Mutex::new(String::new()),
         }
     }
 }
@@ -88,6 +95,8 @@ pub fn reset_live(
         w.origin = Instant::now();
     }
     lock_or_recover(&live.engine).reset();
+    live.mode2_inflight.store(false, Ordering::SeqCst);
+    lock_or_recover(&live.mode2_last_q).clear();
     // Clear the scratch session's live rows so a re-run doesn't accumulate
     // duplicate coverage/event rows (coverage is sticky in memory; the DB is
     // the record, and the engine reset just wiped the in-memory flags).
@@ -114,6 +123,13 @@ pub fn set_thresholds(live: tauri::State<'_, LiveState>, thresholds: Thresholds)
 #[tauri::command]
 pub fn get_thresholds(live: tauri::State<'_, LiveState>) -> Thresholds {
     lock_or_recover(&live.engine).thresholds
+}
+
+/// Panic hotkey / button: show the three universal anchors instantly.
+#[tauri::command]
+pub fn panic_now(app: tauri::AppHandle) {
+    let card = crate::mode2::panic_card();
+    app.emit_to("overlay", "card:assembled", &card).ok();
 }
 
 // ── Events ──────────────────────────────────────────────────────────
@@ -284,7 +300,10 @@ fn tick(app: &tauri::AppHandle) -> Result<(), String> {
                     jumped = Some(card);
                 }
             }
-            Decision::NoConfidence => no_confidence = true,
+            Decision::NoConfidence => {
+                no_confidence = true;
+                maybe_assemble(app, &live, &conn, &them_text);
+            }
             Decision::Stay => {}
         }
     }
@@ -360,6 +379,137 @@ fn tick(app: &tauri::AppHandle) -> Result<(), String> {
 
 fn dot(a: &[f32], b: &[f32]) -> f32 {
     a.iter().zip(b).map(|(x, y)| x * y).sum()
+}
+
+// ── Mode 2: assembly on an unmatched question ───────────────────────
+
+/// Fires Mode-2 assembly when the match engine has no confident card. Shows
+/// the panic card instantly (never a spinner in the overlay — 06_DESIGN),
+/// then assembles in the background and swaps the assembled card in. Debounced
+/// so the same lingering question does not re-trigger every tick.
+fn maybe_assemble(
+    app: &tauri::AppHandle,
+    live: &LiveState,
+    conn: &rusqlite::Connection,
+    question: &str,
+) {
+    let q = question.trim();
+    if q.split_whitespace().count() < 3 {
+        return; // too little to assemble from
+    }
+    // Debounce: skip if one is already running, or we already assembled for a
+    // near-identical question.
+    if live.mode2_inflight.load(Ordering::SeqCst) {
+        return;
+    }
+    {
+        let last = lock_or_recover(&live.mode2_last_q);
+        if crate::audio::text_overlap(q, &last) >= 0.6 {
+            return;
+        }
+    }
+
+    let choice = match resolve_provider(app, conn) {
+        Some(c) => c,
+        None => return, // no provider configured — stay on the panic card
+    };
+
+    // Gather the user's material (all prepared bullets) while we hold the lock.
+    let material = match gather_material(conn) {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::warn!(error = %e, "mode2: gather material failed");
+            return;
+        }
+    };
+
+    live.mode2_inflight.store(true, Ordering::SeqCst);
+    *lock_or_recover(&live.mode2_last_q) = q.to_string();
+
+    // Panic card instantly, as the filler while assembly runs.
+    let panic = crate::mode2::panic_card();
+    app.emit_to("overlay", "card:assembled", &panic).ok();
+
+    let app2 = app.clone();
+    let embedder = app.state::<std::sync::Arc<crate::embed::Embedder>>().inner().clone();
+    let question = q.to_string();
+    // Off the ticker thread: network + embedding, then emit the result.
+    tauri::async_runtime::spawn(async move {
+        let result =
+            crate::mode2::assemble(&choice, &embedder, &material, &question).await;
+        let live = app2.state::<LiveState>();
+        match result {
+            Ok(card) => {
+                app2.emit_to("overlay", "card:assembled", &card).ok();
+                app2.emit_to("dashboard", "mode2:done", &card).ok();
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "mode2 assembly failed");
+                app2.emit_to("dashboard", "mode2:error", &e).ok();
+            }
+        }
+        live.mode2_inflight.store(false, Ordering::SeqCst);
+    });
+}
+
+/// Provider from settings. `llm_mode` = "local" (default, free) or "api".
+/// Local uses the active downloaded model; API pulls its key from the OS
+/// keyring (never our DB — OWNER-RULES).
+fn resolve_provider(
+    app: &tauri::AppHandle,
+    conn: &rusqlite::Connection,
+) -> Option<crate::mode2::ProviderChoice> {
+    let get = |key: &str| -> Option<String> {
+        conn.query_row(
+            "SELECT value FROM settings WHERE key = ?1",
+            params![key],
+            |r| r.get::<_, String>(0),
+        )
+        .ok()
+    };
+    let mode = get("llm_mode").unwrap_or_else(|| "local".to_string());
+    if mode == "api" {
+        let provider = get("llm_provider").unwrap_or_else(|| "openrouter".to_string());
+        let api_key = crate::mode2::keyring_get(&provider).ok()?;
+        return Some(crate::mode2::ProviderChoice::Api {
+            provider,
+            api_key,
+            model: get("llm_model"),
+            custom_base_url: get("llm_custom_url"),
+        });
+    }
+    // Local: the active downloaded model (default = registry default).
+    let model_id = get("local_model")
+        .or_else(|| crate::mode2::models::REGISTRY.iter().find(|m| m.is_default).map(|m| m.id.to_string()))?;
+    let app_data = app.path().app_data_dir().ok()?;
+    let model_path = crate::mode2::models::model_path(&app_data, &model_id);
+    if !model_path.exists() {
+        return None; // not downloaded yet — stay on the panic card
+    }
+    let engine = app.state::<std::sync::Arc<crate::mode2::local::LocalEngine>>().inner().clone();
+    Some(crate::mode2::ProviderChoice::Local {
+        engine,
+        model_id,
+        model_path,
+    })
+}
+
+fn gather_material(conn: &rusqlite::Connection) -> Result<crate::mode2::Material, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT b.text FROM bullets b JOIN cards c ON b.card_id = c.id
+             WHERE c.source = 'prepared' ORDER BY c.created_at, b.position",
+        )
+        .map_err(|e| e.to_string())?;
+    let bullets: Vec<String> = stmt
+        .query_map([], |r| r.get::<_, String>(0))
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(crate::mode2::Material {
+        corpus_bullets: bullets,
+        ..Default::default()
+    })
 }
 
 /// Phase-3 scratch session so card_events/coverage FKs hold before Phase 6.

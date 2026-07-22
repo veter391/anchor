@@ -16,7 +16,9 @@
 
   --assembled: #c99a4e;
   --model-know: #b48ede;
-  --panic: #e06c75;
+  /* "Unexpected question" card: calm amber-orange, NOT alarm red — it should
+     read as "heads up", not "panic". */
+  --unexpected: #e8944a;
   --green: #4fbf7b;
   --red: #e06c75;
 

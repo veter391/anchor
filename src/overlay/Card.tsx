@@ -2,7 +2,7 @@ import { forwardRef } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 export type BulletState = "covered" | "next" | "uncovered";
-export type CardSource = "prepared" | "assembled" | "context" | "panic";
+export type CardSource = "prepared" | "assembled" | "context" | "unexpected";
 
 export interface CardData {
   title: string;
@@ -13,7 +13,8 @@ export interface CardData {
 const SOURCE_LABEL: Partial<Record<CardSource, { text: string; color: string }>> = {
   assembled: { text: "ASSEMBLED LIVE · from your material · ", color: "var(--assembled)" },
   context: { text: "CONTEXT · pre-flight research · ", color: "var(--text-muted)" },
-  panic: { text: "PANIC · ", color: "var(--panic)" },
+  // Calm "heads up", not alarm. The ⚠ is small and amber, not red.
+  unexpected: { text: "⚠ UNEXPECTED QUESTION · ", color: "var(--unexpected)" },
 };
 
 /** The overlay card. Glance-legibility rules from Documents/06_DESIGN.md:
@@ -35,8 +36,8 @@ export const Card = forwardRef<HTMLDivElement, { card: CardData }>(
           borderTop:
             card.source === "assembled"
               ? "2px solid var(--assembled)"
-              : card.source === "panic"
-                ? "2px solid var(--panic)"
+              : card.source === "unexpected"
+                ? "2px solid var(--unexpected)"
                 : "1px solid var(--border)",
           borderRadius: 10,
           padding: "10px 14px",

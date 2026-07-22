@@ -263,7 +263,7 @@ export function Dashboard() {
           <button
             onClick={doWipe}
             disabled={busy !== null}
-            style={{ ...btn, borderColor: "var(--red)", color: "var(--red)" }}
+            style={{ ...btn, border: "1px solid var(--red)", color: "var(--red)" }}
           >
             Wipe corpus
           </button>

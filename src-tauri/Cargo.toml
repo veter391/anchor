@@ -20,6 +20,17 @@ sqlite-vec = "0.1.9"
 fastembed = "5"
 uuid = { version = "1", features = ["v4"] }
 anyhow = "1"
+# Mode-2 LLM calls over HTTP. rustls (not native-tls) to avoid an OpenSSL
+# build dep; json feature for typed request/response bodies.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+tokio = { version = "1", features = ["rt", "macros"] }
+futures-util = "0.3"
+sha2 = "0.10"
+# Embedded local LLM for the free Mode-2 path (no external server/UI). ggml
+# runs alongside our ONNX stack; build with GGML_OPENMP=OFF (build env) so the
+# two OpenMP runtimes don't clash on Windows.
+llama-cpp-2 = "0.1"
+keyring = "4"
 # Audio (Phase 4). sherpa-onnx as a DLL so its bundled ONNX Runtime does not
 # clash with fastembed's static `ort` (LNK2005 otherwise — proven in Phase 0).
 sherpa-onnx = { version = "1.13.4", default-features = false, features = ["shared"] }

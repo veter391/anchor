@@ -28,7 +28,8 @@ const ECHO_OVERLAP: f64 = 0.6;
 /// Word-overlap of `a` relative to the shorter of the two (0..1). Cheap
 /// bag-of-words containment — good enough to spot near-duplicate echoes
 /// without flagging a user who merely says a couple of the same words.
-fn text_overlap(a: &str, b: &str) -> f64 {
+/// Also reused by the Mode-2 debounce (live.rs).
+pub fn text_overlap(a: &str, b: &str) -> f64 {
     let norm = |s: &str| -> Vec<String> {
         s.split(|c: char| !c.is_alphanumeric())
             .filter(|w| w.len() > 1)

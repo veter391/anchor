@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { Mode2Settings } from "./Mode2Settings";
 
 interface Thresholds {
   theta_card: number;
@@ -77,6 +78,7 @@ export function LivePanel() {
   const [health, setHealth] = useState<{ them_silent: boolean; me_silent: boolean } | null>(
     null,
   );
+  const [mode2, setMode2] = useState<string | null>(null);
   const stopRef = useRef(false);
 
   useEffect(() => {
@@ -91,10 +93,20 @@ export function LivePanel() {
       "audio:health",
       (e) => setHealth(e.payload),
     );
+    const unDone = listen<{ title: string; has_model_knowledge: boolean }>(
+      "mode2:done",
+      (e) =>
+        setMode2(
+          `assembled "${e.payload.title}"${e.payload.has_model_knowledge ? " (contains model knowledge)" : ""}`,
+        ),
+    );
+    const unErr = listen<string>("mode2:error", (e) => setMode2(`error: ${e.payload}`));
     return () => {
       unDebug.then((f) => f()).catch(() => {});
       unPartial.then((f) => f()).catch(() => {});
       unHealth.then((f) => f()).catch(() => {});
+      unDone.then((f) => f()).catch(() => {});
+      unErr.then((f) => f()).catch(() => {});
     };
   }, []);
 
@@ -155,7 +167,7 @@ export function LivePanel() {
             onClick={toggleAudio}
             style={{
               ...btn,
-              borderColor: audioOn ? "var(--red)" : "var(--accent)",
+              border: `1px solid ${audioOn ? "var(--red)" : "var(--accent)"}`,
               color: audioOn ? "var(--red)" : "var(--accent)",
             }}
           >
@@ -193,6 +205,38 @@ export function LivePanel() {
 
       <section style={panel}>
         <h3 style={{ margin: "0 0 8px", fontSize: 13, color: "var(--text-muted)" }}>
+          MODE 2 — assembly &amp; unexpected-question card (Phase 5)
+        </h3>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <button
+            onClick={() => invoke("panic_now").catch(() => {})}
+            style={{ ...btn, border: "1px solid var(--unexpected)", color: "var(--unexpected)" }}
+          >
+            ⚠ Unexpected question
+          </button>
+          <span style={{ color: "var(--text-muted)", fontSize: 12 }}>
+            an unprepared question (no confident card) auto-assembles from your
+            material — configure the engine below (free local model or your API
+            key).
+          </span>
+        </div>
+        {mode2 && (
+          <div
+            style={{
+              marginTop: 8,
+              fontSize: 12,
+              color: mode2.startsWith("error") ? "var(--red)" : "var(--assembled)",
+            }}
+          >
+            {mode2}
+          </div>
+        )}
+      </section>
+
+      <Mode2Settings />
+
+      <section style={panel}>
+        <h3 style={{ margin: "0 0 8px", fontSize: 13, color: "var(--text-muted)" }}>
           TRANSCRIPT PLAYER — Phase 3 (them: / me: lines, played at speaking pace)
         </h3>
         <textarea
@@ -221,7 +265,7 @@ export function LivePanel() {
               onClick={() => {
                 stopRef.current = true;
               }}
-              style={{ ...btn, borderColor: "var(--red)", color: "var(--red)" }}
+              style={{ ...btn, border: "1px solid var(--red)", color: "var(--red)" }}
             >
               ■ Stop
             </button>

@@ -7,6 +7,21 @@ use std::path::Path;
 
 pub const SCHEMA_VERSION: i64 = 3;
 
+/// Registers sqlite-vec as an auto-extension. MUST run before any connection
+/// opens (the app calls it once at startup; benches/tests call it themselves).
+pub fn register_vec_extension() {
+    type ExtInit = unsafe extern "C" fn(
+        *mut rusqlite::ffi::sqlite3,
+        *mut *mut std::os::raw::c_char,
+        *const rusqlite::ffi::sqlite3_api_routines,
+    ) -> std::os::raw::c_int;
+    unsafe {
+        rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute::<*const (), ExtInit>(
+            sqlite_vec::sqlite3_vec_init as *const (),
+        )));
+    }
+}
+
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS sessions (
   id            TEXT PRIMARY KEY,
