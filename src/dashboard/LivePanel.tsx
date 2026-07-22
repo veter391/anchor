@@ -74,6 +74,9 @@ export function LivePanel() {
   const [audioErr, setAudioErr] = useState<string | null>(null);
   const [themPartial, setThemPartial] = useState("");
   const [mePartial, setMePartial] = useState("");
+  const [health, setHealth] = useState<{ them_silent: boolean; me_silent: boolean } | null>(
+    null,
+  );
   const stopRef = useRef(false);
 
   useEffect(() => {
@@ -84,9 +87,14 @@ export function LivePanel() {
       const setter = e.payload.speaker === "them" ? setThemPartial : setMePartial;
       setter(e.payload.text);
     });
+    const unHealth = listen<{ them_silent: boolean; me_silent: boolean }>(
+      "audio:health",
+      (e) => setHealth(e.payload),
+    );
     return () => {
       unDebug.then((f) => f()).catch(() => {});
       unPartial.then((f) => f()).catch(() => {});
+      unHealth.then((f) => f()).catch(() => {});
     };
   }, []);
 
@@ -161,6 +169,13 @@ export function LivePanel() {
         </div>
         {audioErr && (
           <div style={{ color: "var(--red)", fontSize: 12, marginTop: 6 }}>{audioErr}</div>
+        )}
+        {audioOn && health?.them_silent && (
+          <div style={{ color: "var(--assembled)", fontSize: 12, marginTop: 6 }}>
+            ⚠ system audio (them) is silent — check your output device. With some
+            Bluetooth headsets Windows switches the output on a call; if this
+            stays silent, the other side won&apos;t be transcribed.
+          </div>
         )}
         {audioOn && (
           <div style={{ marginTop: 8, display: "grid", gap: 4, ...mono }}>

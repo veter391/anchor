@@ -9,9 +9,15 @@ use crate::live::LiveState;
 use asr::{Asr, Emit};
 use capture::{AudioChunk, Channel};
 use serde::Serialize;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::Receiver;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use tauri::{Emitter, Manager};
+
+/// A "them" channel that stays silent this long while listening is almost
+/// always a wrong/dead output endpoint — the classic earbuds/loopback trap.
+const DEAD_CHANNEL_SECS: u64 = 6;
 
 /// Owns the running capture + worker; None when audio is stopped.
 #[derive(Default)]
@@ -39,6 +45,12 @@ struct PartialEvent {
     final_: bool,
 }
 
+#[derive(Serialize, Clone)]
+struct ChannelHealth {
+    them_silent: bool,
+    me_silent: bool,
+}
+
 #[tauri::command]
 pub fn audio_status(audio: tauri::State<'_, AudioState>) -> bool {
     audio.running.lock().map(|g| g.is_some()).unwrap_or(false)
@@ -64,11 +76,22 @@ pub fn start_audio(app: tauri::AppHandle, audio: tauri::State<'_, AudioState>) -
     let handles = capture::start(tx)?;
 
     let stop_worker = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    // Millis-since-start of the last chunk seen on each channel (0 = never).
+    let them_seen = Arc::new(AtomicU64::new(0));
+    let me_seen = Arc::new(AtomicU64::new(0));
     let worker = {
         let app = app.clone();
         let stop = stop_worker.clone();
-        std::thread::spawn(move || worker_loop(app, asr, rx, stop))
+        let them_seen = them_seen.clone();
+        let me_seen = me_seen.clone();
+        std::thread::spawn(move || worker_loop(app, asr, rx, stop, them_seen, me_seen))
     };
+    // Health watchdog: warns when a channel goes quiet (wrong endpoint / earbuds).
+    {
+        let app = app.clone();
+        let stop = stop_worker.clone();
+        std::thread::spawn(move || health_loop(app, stop, them_seen, me_seen));
+    }
 
     *guard = Some(Running {
         handles,
@@ -124,9 +147,12 @@ fn worker_loop(
     asr: Asr,
     rx: Receiver<AudioChunk>,
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    them_seen: Arc<AtomicU64>,
+    me_seen: Arc<AtomicU64>,
 ) {
     let mut them = asr.new_channel();
     let mut me = asr.new_channel();
+    let origin = Instant::now();
 
     while !stop.load(std::sync::atomic::Ordering::SeqCst) {
         let chunk = match rx.recv_timeout(std::time::Duration::from_millis(250)) {
@@ -134,10 +160,16 @@ fn worker_loop(
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
         };
-        let (speaker, ch) = match chunk.channel {
-            Channel::Them => ("them", &mut them),
-            Channel::Me => ("me", &mut me),
+        let now_ms = origin.elapsed().as_millis() as u64;
+        let (speaker, ch, seen) = match chunk.channel {
+            Channel::Them => ("them", &mut them, &them_seen),
+            Channel::Me => ("me", &mut me, &me_seen),
         };
+        // Only non-trivial audio counts as "alive" (loopback emits tiny
+        // silent frames on some endpoints).
+        if chunk.samples.iter().any(|s| s.abs() > 1e-4) {
+            seen.store(now_ms.max(1), Ordering::SeqCst);
+        }
         let emit = asr.feed(ch, chunk.sample_rate, &chunk.samples);
         match emit {
             Emit::Final(text) => {
@@ -173,4 +205,34 @@ fn worker_loop(
         }
     }
     tracing::debug!("audio worker exited");
+}
+
+/// Emits a health event whenever a channel's silence state changes.
+fn health_loop(
+    app: tauri::AppHandle,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    them_seen: Arc<AtomicU64>,
+    me_seen: Arc<AtomicU64>,
+) {
+    let origin = Instant::now();
+    let mut last: Option<ChannelHealth> = None;
+    while !stop.load(Ordering::SeqCst) {
+        std::thread::sleep(Duration::from_millis(1000));
+        let now_ms = origin.elapsed().as_millis() as u64;
+        let silent = |seen: &AtomicU64| {
+            let s = seen.load(Ordering::SeqCst);
+            // Never-seen or quiet for longer than the threshold.
+            now_ms.saturating_sub(s) > DEAD_CHANNEL_SECS * 1000
+        };
+        let health = ChannelHealth {
+            them_silent: silent(&them_seen),
+            me_silent: silent(&me_seen),
+        };
+        if last.as_ref().map(|l| (l.them_silent, l.me_silent))
+            != Some((health.them_silent, health.me_silent))
+        {
+            app.emit_to("dashboard", "audio:health", health.clone()).ok();
+            last = Some(health);
+        }
+    }
 }
