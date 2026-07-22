@@ -7,7 +7,8 @@
   --border: #262c36;
 
   --text: #e8edf2;
-  --text-dim: #5a6472;
+  --text-soft: #b8c1cc; /* uncovered-but-not-next: readable, quieter than the highlight */
+  --text-dim: #6b7684; /* covered bullets: receded by design, ≥4:1 legible */
   --text-muted: #8a94a3;
 
   --accent: #4fd1c5;
@@ -42,6 +43,19 @@ body,
   background: transparent;
   overflow: hidden;
   height: 100%;
+}
+
+/* Card change = 120 ms cross-fade (06_DESIGN hard rule #5). */
+@keyframes card-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+.card-fade {
+  animation: card-fade-in 120ms ease-out;
 }
 
 @media (prefers-reduced-motion: reduce) {

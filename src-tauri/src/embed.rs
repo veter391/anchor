@@ -10,7 +10,9 @@ use std::sync::Mutex;
 pub const MODEL_ID: &str = "embeddinggemma-300m-q";
 pub const DIMS: usize = 256;
 
-/// EmbeddingGemma prompt formats (Google model card).
+/// EmbeddingGemma prompt formats (Google model card). Verified against the
+/// fastembed source: it does NOT auto-prefix Gemma inputs, so these are the
+/// only prompts applied — no double-prefixing.
 fn query_prompt(text: &str) -> String {
     format!("task: search result | query: {text}")
 }

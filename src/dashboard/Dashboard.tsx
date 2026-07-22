@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { open } from "@tauri-apps/plugin-dialog";
 
 interface BootInfo {
   db_path: string;
@@ -56,6 +57,8 @@ export function Dashboard() {
   const [busy, setBusy] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
+  const pollFails = useRef(0);
+
   const refresh = useCallback(() => {
     invoke<BootInfo>("boot_info").then(setBoot).catch((e) => setErr(String(e)));
     invoke<CardRow[]>("list_cards").then(setCards).catch((e) => setErr(String(e)));
@@ -64,8 +67,17 @@ export function Dashboard() {
   useEffect(() => {
     refresh();
     const t = setInterval(() => {
-      // embedder_loaded flips asynchronously after the pre-warm finishes
-      invoke<BootInfo>("boot_info").then(setBoot).catch(() => {});
+      // embedder_loaded flips asynchronously after the pre-warm finishes.
+      // Repeated failures surface instead of silently showing stale state.
+      invoke<BootInfo>("boot_info")
+        .then((b) => {
+          pollFails.current = 0;
+          setBoot(b);
+        })
+        .catch((e) => {
+          pollFails.current += 1;
+          if (pollFails.current === 3) setErr(`status polling failing: ${e}`);
+        });
     }, 2000);
     return () => clearInterval(t);
   }, [refresh]);
@@ -81,6 +93,46 @@ export function Dashboard() {
       setErr(String(e));
     } finally {
       setBusy(null);
+    }
+  };
+
+  const doImportFolder = async () => {
+    const dir = await open({ directory: true, title: "Pick your cards folder" });
+    if (typeof dir !== "string") return;
+    setBusy("importing folder…");
+    setErr(null);
+    try {
+      setReport(await invoke<ImportReport>("import_folder", { path: dir }));
+      refresh();
+    } catch (e) {
+      setErr(String(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const doWipe = async () => {
+    setBusy("wiping…");
+    setErr(null);
+    try {
+      await invoke("wipe_corpus");
+      setReport(null);
+      setResult(null);
+      refresh();
+    } catch (e) {
+      setErr(String(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const doDelete = async (cardId: string) => {
+    setErr(null);
+    try {
+      await invoke("delete_card", { cardId });
+      refresh();
+    } catch (e) {
+      setErr(String(e));
     }
   };
 
@@ -202,13 +254,12 @@ export function Dashboard() {
           <button onClick={doImport} disabled={!md.trim() || busy !== null} style={btn}>
             Import
           </button>
+          <button onClick={doImportFolder} disabled={busy !== null} style={btn}>
+            Import folder…
+          </button>
           <button
-            onClick={async () => {
-              await invoke("wipe_corpus");
-              setReport(null);
-              setResult(null);
-              refresh();
-            }}
+            onClick={doWipe}
+            disabled={busy !== null}
             style={{ ...btn, borderColor: "var(--red)", color: "var(--red)" }}
           >
             Wipe corpus
@@ -244,13 +295,29 @@ export function Dashboard() {
                 borderLeft: "3px solid var(--border)",
                 paddingLeft: 10,
                 fontSize: 14,
+                display: "flex",
+                alignItems: "baseline",
+                gap: 8,
               }}
             >
-              <span style={{ color: "var(--text)" }}>{c.title}</span>{" "}
-              <span style={{ color: "var(--text-dim)", fontSize: 12 }}>
+              <span style={{ color: "var(--text)" }}>{c.title}</span>
+              <span style={{ color: "var(--text-dim)", fontSize: 12, flex: 1 }}>
                 {c.bullets.length} anchors · {c.language}
                 {c.tags ? ` · ${c.tags}` : ""}
               </span>
+              <button
+                onClick={() => doDelete(c.id)}
+                title="Delete this card"
+                style={{
+                  background: "none",
+                  border: "none",
+                  color: "var(--text-dim)",
+                  cursor: "pointer",
+                  fontSize: 13,
+                }}
+              >
+                ✕
+              </button>
             </div>
           ))}
         </div>

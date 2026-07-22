@@ -20,15 +20,29 @@ pub struct Match {
     pub bm25_rank: Option<usize>,
 }
 
+/// Embeds the query. Call WITHOUT holding the DB lock (model work is slow).
+pub fn embed_query_text(embedder: &Embedder, text: &str) -> Result<Vec<f32>, String> {
+    embedder.embed_query(text)
+}
+
 pub fn query_cards(
     conn: &Connection,
     embedder: &Embedder,
     text: &str,
 ) -> Result<Vec<Match>, String> {
+    let qvec = embed_query_text(embedder, text)?;
+    query_cards_with_vec(conn, &qvec, text)
+}
+
+/// Hybrid query with a pre-computed query vector — no model work inside.
+pub fn query_cards_with_vec(
+    conn: &Connection,
+    qvec: &[f32],
+    text: &str,
+) -> Result<Vec<Match>, String> {
     let mut legs: HashMap<String, Match> = HashMap::new();
 
     // Vector leg.
-    let qvec = embedder.embed_query(text)?;
     {
         let mut stmt = conn
             .prepare(
@@ -37,7 +51,7 @@ pub fn query_cards(
             )
             .map_err(|e| e.to_string())?;
         let rows = stmt
-            .query_map(params![vec_to_blob(&qvec), LEG_LIMIT as i64], |r| {
+            .query_map(params![vec_to_blob(qvec), LEG_LIMIT as i64], |r| {
                 Ok((r.get::<_, String>(0)?, r.get::<_, f64>(1)?))
             })
             .map_err(|e| e.to_string())?;

@@ -10,14 +10,25 @@ export interface CardData {
   bullets: { text: string; state: BulletState; provenance?: "model_knowledge" }[];
 }
 
+const SOURCE_LABEL: Partial<Record<CardSource, { text: string; color: string }>> = {
+  assembled: { text: "ASSEMBLED LIVE · from your material · ", color: "var(--assembled)" },
+  context: { text: "CONTEXT · pre-flight research · ", color: "var(--text-muted)" },
+  panic: { text: "PANIC · ", color: "var(--panic)" },
+};
+
 /** The overlay card. Glance-legibility rules from Documents/06_DESIGN.md:
  *  one card, max 6 bullets, 18px bullets, covered dims, next gets the accent
- *  bar, motion limited to colour shifts. */
+ *  bar, motion limited to colour shifts and a 120 ms card fade. */
 export const Card = forwardRef<HTMLDivElement, { card: CardData }>(
   function Card({ card }, ref) {
+    const label = SOURCE_LABEL[card.source];
+    const hasModelKnowledge = card.bullets.some(
+      (b) => b.provenance === "model_knowledge",
+    );
     return (
       <div
         ref={ref}
+        className="card-fade"
         style={{
           background: "var(--bg)",
           border: "1px solid var(--border)",
@@ -49,9 +60,7 @@ export const Card = forwardRef<HTMLDivElement, { card: CardData }>(
             textOverflow: "ellipsis",
           }}
         >
-          {card.source === "assembled" && (
-            <span style={{ color: "var(--assembled)" }}>ASSEMBLED LIVE · </span>
-          )}
+          {label && <span style={{ color: label.color }}>{label.text}</span>}
           {card.title}
         </div>
 
@@ -61,13 +70,21 @@ export const Card = forwardRef<HTMLDivElement, { card: CardData }>(
             style={{
               fontSize: "var(--size-bullet)",
               lineHeight: "var(--leading)",
-              color: b.state === "covered" ? "var(--text-dim)" : "var(--text)",
+              // The NEXT anchor is the only bright-white line; later anchors
+              // stay readable but a notch quieter; covered ones recede.
+              color:
+                b.state === "covered"
+                  ? "var(--text-dim)"
+                  : b.state === "next"
+                    ? "var(--text)"
+                    : "var(--text-soft)",
               background: b.state === "next" ? "var(--accent-bg)" : "transparent",
               borderLeft:
                 b.state === "next"
                   ? "3px solid var(--accent)"
                   : "3px solid transparent",
               paddingLeft: 8,
+              marginTop: i === 0 ? 0 : 7,
               transition: "color 120ms, background 120ms",
             }}
           >
@@ -78,6 +95,18 @@ export const Card = forwardRef<HTMLDivElement, { card: CardData }>(
             {b.text}
           </div>
         ))}
+
+        {hasModelKnowledge && (
+          <div
+            style={{
+              marginTop: 8,
+              fontSize: "var(--size-meta)",
+              color: "var(--model-know)",
+            }}
+          >
+            ◆ contains model knowledge — not from your material
+          </div>
+        )}
       </div>
     );
   },

@@ -5,7 +5,7 @@
 use rusqlite::Connection;
 use std::path::Path;
 
-pub const SCHEMA_VERSION: i64 = 2;
+pub const SCHEMA_VERSION: i64 = 3;
 
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS sessions (
@@ -92,6 +92,17 @@ CREATE TABLE IF NOT EXISTS settings (
   key           TEXT PRIMARY KEY,
   value         TEXT NOT NULL
 );
+
+-- FTS and vec tables are virtual: FK cascades never touch them, so derived
+-- rows are cleaned up by triggers. bullet_vec cleanup rides on bullet deletes
+-- (which themselves cascade from cards).
+CREATE TRIGGER IF NOT EXISTS trg_cards_delete AFTER DELETE ON cards BEGIN
+  DELETE FROM card_fts  WHERE card_id  = OLD.id;
+  DELETE FROM card_vec  WHERE card_id  = OLD.id;
+END;
+CREATE TRIGGER IF NOT EXISTS trg_bullets_delete AFTER DELETE ON bullets BEGIN
+  DELETE FROM bullet_vec WHERE bullet_id = OLD.id;
+END;
 "#;
 
 pub fn open_and_migrate(path: &Path) -> rusqlite::Result<Connection> {
@@ -107,8 +118,64 @@ pub fn open_and_migrate(path: &Path) -> rusqlite::Result<Connection> {
     }
 
     conn.execute_batch(SCHEMA)?;
+
+    if user_version > 0 && user_version < 3 {
+        // v3: card_fts may have been recreated empty on the v1→v2 drop, and the
+        // delete triggers arrive only now — rebuild the keyword index from truth.
+        conn.execute_batch(
+            "DELETE FROM card_fts;
+             INSERT INTO card_fts (card_id, title, bullets_text)
+               SELECT c.id, c.title,
+                      COALESCE((SELECT group_concat(text, ' ' ORDER BY position)
+                                FROM bullets WHERE card_id = c.id), '')
+               FROM cards c;",
+        )?;
+    }
+
     conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     Ok(conn)
+}
+
+/// Boot-time guard: the stored embedding space must match the compiled one.
+/// Empty corpus → adopt the compiled config (recreate vec tables if needed).
+/// Non-empty corpus + mismatch → hard error; silent mixing of embedding
+/// spaces corrupts retrieval invisibly.
+pub fn check_embedding_compat(
+    conn: &Connection,
+    model: &str,
+    dims: i64,
+) -> Result<(), String> {
+    let stored: Option<(String, i64)> = conn
+        .query_row(
+            "SELECT model, dims FROM embedding_config WHERE id = 1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .map(Some)
+        .unwrap_or(None);
+    let Some((s_model, s_dims)) = stored else { return Ok(()) };
+    if s_model == model && s_dims == dims {
+        return Ok(());
+    }
+    let cards: i64 = conn
+        .query_row("SELECT COUNT(*) FROM cards", [], |r| r.get(0))
+        .map_err(|e| e.to_string())?;
+    if cards == 0 {
+        conn.execute_batch(&format!(
+            "DELETE FROM embedding_config;
+             INSERT INTO embedding_config (id, model, dims, created_at)
+               VALUES (1, '{model}', {dims}, strftime('%s','now'));
+             DROP TABLE IF EXISTS card_vec;
+             DROP TABLE IF EXISTS bullet_vec;"
+        ))
+        .map_err(|e| e.to_string())?;
+        ensure_vec_tables(conn, dims).map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+    Err(format!(
+        "embedding model changed ({s_model}/{s_dims}d stored vs {model}/{dims}d compiled) \
+         with a non-empty corpus; re-import the corpus (wipe + import) to re-embed"
+    ))
 }
 
 /// Embedding model registration. One row; changing it means re-embedding.

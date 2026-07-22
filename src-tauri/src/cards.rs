@@ -57,7 +57,8 @@ pub fn parse_markdown(input: &str, default_lang: &str) -> ParseOutcome {
 }
 
 fn finish(current: &mut Option<ParsedCard>, out: &mut ParseOutcome) {
-    let Some(card) = current.take() else { return };
+    let Some(mut card) = current.take() else { return };
+    card.bullets.retain(|b| !b.trim().is_empty());
     if card.bullets.is_empty() {
         out.rejected
             .push(format!("\"{}\": no bullets — not a card", card.title));

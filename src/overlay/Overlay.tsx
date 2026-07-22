@@ -33,8 +33,14 @@ function toCardData(row: CardRow): CardData {
 }
 
 /** Reports the card's bounding box to Rust so the cursor-poll loop knows
- *  which regions are interactive; everything else stays click-through. */
-function useInteractiveZone(ref: React.RefObject<HTMLDivElement | null>) {
+ *  which regions are interactive, and asks the window to fit the content
+ *  height so wrapping bullets never clip. Zones are CSS/logical px relative
+ *  to the viewport — Rust converts the cursor into the same space per tick,
+ *  so drags and DPI scaling need no re-report. Re-runs on every card swap. */
+function useInteractiveZone(
+  ref: React.RefObject<HTMLDivElement | null>,
+  cardKey: string,
+) {
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
@@ -45,29 +51,31 @@ function useInteractiveZone(ref: React.RefObject<HTMLDivElement | null>) {
       }).catch(() => {
         /* dev-server reload race; next report wins */
       });
+      invoke("fit_overlay_height", { height: r.bottom + 8 }).catch(() => {});
     };
     report();
     const ro = new ResizeObserver(report);
     ro.observe(el);
     return () => ro.disconnect();
-  }, [ref]);
+  }, [ref, cardKey]);
 }
 
 export function Overlay() {
   const cardRef = useRef<HTMLDivElement | null>(null);
   const [card, setCard] = useState<CardData>(EMPTY_STATE);
-  useInteractiveZone(cardRef);
+  useInteractiveZone(cardRef, card.title);
 
   useEffect(() => {
     const un = listen<CardRow>("card:show", (e) => setCard(toCardData(e.payload)));
     return () => {
-      void un.then((f) => f());
+      un.then((f) => f()).catch(() => {});
     };
   }, []);
 
   return (
     <div style={{ padding: 6 }}>
-      <Card ref={cardRef} card={card} />
+      {/* key change restarts the 120 ms card fade */}
+      <Card key={card.title} ref={cardRef} card={card} />
     </div>
   );
 }

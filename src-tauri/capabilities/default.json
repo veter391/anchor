@@ -2,5 +2,9 @@
   "identifier": "default",
   "description": "Core window/event access for the overlay and dashboard.",
   "windows": ["overlay", "dashboard"],
-  "permissions": ["core:default", "core:window:allow-start-dragging"]
+  "permissions": [
+    "core:default",
+    "core:window:allow-start-dragging",
+    "dialog:allow-open"
+  ]
 }

@@ -30,8 +30,11 @@ src-tauri/gen/
 *.gguf
 /bench/recordings/
 
-# ── Local state ───────────────────────────────────────────────
+# ── Local state (incl. SQLite WAL sidecars — they carry live data) ──
 *.db
+*.db-wal
+*.db-shm
+*.db-journal
 *.sqlite
 *.log
 
