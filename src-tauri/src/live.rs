@@ -55,6 +55,23 @@ fn lock_or_recover<'a, T>(m: &'a Mutex<T>) -> std::sync::MutexGuard<'a, T> {
     m.lock().unwrap_or_else(|p| p.into_inner())
 }
 
+/// Re-emits the current card in the active bullet-length style. Used when
+/// the style setting changes so the overlay restyles in the moment.
+pub(crate) fn restyle_current_card(app: &tauri::AppHandle) -> Result<(), String> {
+    let live = app.state::<LiveState>();
+    let card_id = {
+        let engine = lock_or_recover(&live.engine);
+        engine.current_card().map(String::from)
+    };
+    let Some(card_id) = card_id else { return Ok(()) };
+    let db = app.state::<crate::Db>();
+    let conn = db.conn.lock().map_err(|e| e.to_string())?;
+    if let Some(card) = store::get_card(&conn, &card_id)? {
+        app.emit_to("overlay", "card:show", &card).ok();
+    }
+    Ok(())
+}
+
 // ── Commands ────────────────────────────────────────────────────────
 
 #[tauri::command]

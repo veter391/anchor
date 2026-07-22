@@ -4,8 +4,11 @@
 
 use serde::Serialize;
 
-pub const MAX_BULLETS: usize = 6;
-const PROSE_WORD_LIMIT: usize = 10;
+// Owner decision 2026-07-23: genuinely broad topics may carry 7-8 anchors,
+// and the prose warning fires only on REAL prose (>15 words) — the default
+// keyword style targets ~10, and warning at 11 was pure noise.
+pub const MAX_BULLETS: usize = 8;
+const PROSE_WORD_LIMIT: usize = 15;
 
 #[derive(Debug, Serialize)]
 pub struct ParsedCard {
@@ -117,6 +120,8 @@ lang: en
 - e
 - f
 - g
+- h
+- i
 "#;
 
     #[test]
@@ -131,7 +136,7 @@ lang: en
 
     #[test]
     fn warns_on_prose() {
-        let md = "## Q one\n- I built an internal multi-agent platform with around twenty six agents that handles operations\n";
+        let md = "## Q one\n- I built an internal multi-agent platform with around twenty six agents that handles all of the company operations every single day\n";
         let out = parse_markdown(md, "en");
         assert_eq!(out.cards.len(), 1);
         assert_eq!(out.warnings.len(), 1);

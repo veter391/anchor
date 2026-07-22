@@ -84,7 +84,13 @@ pub const GROUND_FLOOR: f64 = 0.55;
 /// max 0.309 across EN + cross-lingual RU pairs); re-tune in Phase 7.
 pub const REL_FLOOR: f64 = 0.32;
 
-pub const MAX_BULLETS: usize = 6;
+/// Hard cap (owner decision 2026-07-23: up to 7-8 for genuinely broad
+/// topics; the prompt scales the count to the question, this only caps it).
+pub const MAX_BULLETS: usize = 8;
+
+/// Below this many surviving bullets the card is too thin to help — top it
+/// up with the strongest unused fallback bridges (labelled model-knowledge).
+const MIN_USEFUL_BULLETS: usize = 3;
 
 /// The panic card — shown instantly on the hotkey, and as the filler while
 /// Mode 2 is still assembling. Fixed, universal, no generation.
@@ -230,7 +236,7 @@ pub async fn assemble(
     let prompt = AssemblyPrompt {
         question: question.to_string(),
         material: material_text,
-        bridges,
+        bridges: bridges.clone(),
         style: style.to_string(),
         max_bullets: MAX_BULLETS,
     };
@@ -299,9 +305,24 @@ pub async fn assemble(
         texts = kept_texts;
         flags = kept_flags;
     }
+    // Too thin a card helps nobody (owner: "one bullet is not an answer").
+    // Top up with the strongest unused fallback bridges — they were already
+    // selected by relevance to THIS question, and they carry the [K] flag.
+    if texts.len() < MIN_USEFUL_BULLETS {
+        for b in &bridges {
+            if texts.len() >= MIN_USEFUL_BULLETS {
+                break;
+            }
+            let dup = texts.iter().any(|t| crate::audio::text_overlap(t, b) >= 0.6);
+            if !dup {
+                texts.push(b.clone());
+                flags.push(true);
+            }
+        }
+    }
     if texts.is_empty() {
-        // Nothing the model produced answers the question — the honest
-        // bottom of the ladder, enforced in code, never a fabricated card.
+        // Nothing the model produced answers the question and no bridge fits
+        // — the honest bottom of the ladder, enforced in code.
         return Ok(clarify_card(&raw.title));
     }
 

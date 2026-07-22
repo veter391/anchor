@@ -59,7 +59,10 @@ impl AssemblyPrompt {
     pub fn system(&self) -> String {
         format!(
             "You assemble a tiny cue card for someone speaking live under pressure.\n\
-             Output up to {n} short keyword bullets, never full sentences, never prose to read aloud.\n\
+             Output keyword bullets, never full sentences, never prose to read aloud.\n\
+             SIZE THE CARD TO THE QUESTION: 2-3 bullets for a narrow fact, 4-5 for a normal \
+             answer, up to {n} for a genuinely broad topic. A single bullet is only acceptable \
+             when the only honest move is to ask for clarification.\n\
              {style}\n\
              RULE ZERO: every bullet must ANSWER the question just asked. Material that does not \
              address THIS question is off-limits — padding the card with unrelated notes is worse \

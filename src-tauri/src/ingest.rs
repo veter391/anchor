@@ -148,6 +148,131 @@ fn parse_drafts(raw: &str) -> Option<DraftCards> {
     serde_json::from_str(&json).ok()
 }
 
+// ── Length-variant backfill (the adapt job) ─────────────────────────
+//
+// The bullet-length setting restyles the WHOLE corpus in the moment (owner
+// decision). Display reads a stored variant per bullet; this job fills the
+// missing variants with the configured engine, one call per card.
+
+#[derive(Deserialize)]
+struct VariantRow {
+    short: String,
+    long: String,
+}
+#[derive(Deserialize)]
+struct VariantCards {
+    bullets: Vec<VariantRow>,
+}
+
+fn variant_system() -> String {
+    "You rewrite cue-card bullets into two extra lengths, keeping the SAME meaning \
+     and the same language.\n\
+     - short: 1-2 words — the sharpest keyword. NEVER copy the whole bullet.\n\
+     - long: 10-16 words — the same fact slightly fuller; keyword style, no sentence endings.\n\
+     Example bullet: \"moved 40 services, zero downtime\"\n\
+     -> short: \"40 services\"\n\
+     -> long: \"moved all 40 services, zero downtime, blue-green rollout, no user impact\"\n\
+     Never invent new facts, names or numbers; only compress or expand what is there.\n\
+     Return ONLY a JSON object: {\"bullets\": [{\"short\": \"...\", \"long\": \"...\"}]} \
+     with EXACTLY one entry per input bullet, in the same order."
+        .to_string()
+}
+
+const STOPWORDS: &[&str] = &[
+    "the", "a", "an", "of", "and", "or", "to", "in", "on", "for", "with", "is", "are", "was",
+    "were", "be", "by", "at", "as", "it", "that", "this",
+];
+
+/// Deterministic 1-2-word anchor from the canonical bullet — the fallback
+/// when the model's "short" breaks the contract. Prefers significant words.
+fn derive_short(base: &str) -> String {
+    let words: Vec<&str> = base
+        .split(|c: char| !(c.is_alphanumeric() || c == '-' || c == '+' || c == '%'))
+        .filter(|w| {
+            w.chars().any(char::is_alphanumeric) && !STOPWORDS.contains(&w.to_lowercase().as_str())
+        })
+        .take(2)
+        .collect();
+    if words.is_empty() {
+        base.split_whitespace().take(2).collect::<Vec<_>>().join(" ")
+    } else {
+        words.join(" ")
+    }
+}
+
+/// Enforce the variant contracts in code — small models drift (observed
+/// live: "short" echoing the full bullet, "long" turning into prose).
+fn sanitize_short(base: &str, s: &str) -> String {
+    let s = s.trim().trim_end_matches('.');
+    let n = s.split_whitespace().count();
+    if (1..=2).contains(&n) && !s.eq_ignore_ascii_case(base.trim()) {
+        s.to_string()
+    } else {
+        derive_short(base)
+    }
+}
+
+fn sanitize_long(base: &str, l: &str) -> String {
+    let l = l.trim().trim_end_matches('.');
+    let n = l.split_whitespace().count();
+    // Must actually be fuller than the base, but never balloon into prose.
+    if n <= 18 && n > base.split_whitespace().count() {
+        l.to_string()
+    } else {
+        base.to_string()
+    }
+}
+
+/// Fills missing short/long variants for every bullet that lacks them.
+/// `write` persists one bullet's variants (called under the caller's lock
+/// discipline); `on_progress(done_cards, total_cards)` drives the UI.
+pub async fn adapt_variants(
+    choice: &ProviderChoice,
+    work: Vec<crate::store::VariantWorkItem>,
+    mut write: impl FnMut(&str, &str, &str) -> Result<(), String>,
+    on_progress: impl Fn(usize, usize),
+) -> Result<usize, String> {
+    let total = work.len();
+    let mut adapted = 0usize;
+    for (i, (_card_id, title, bullets)) in work.into_iter().enumerate() {
+        let user = format!(
+            "CARD: {title}\nBULLETS:\n{}",
+            bullets
+                .iter()
+                .map(|(_, t)| format!("- {t}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+        let model_vars: Vec<VariantRow> = match mode2::complete(choice, variant_system(), user, 500)
+            .await
+        {
+            Ok(out) => mode2::local::extract_json(&out)
+                .and_then(|json| serde_json::from_str::<VariantCards>(&json).ok())
+                .map(|v| v.bullets)
+                .unwrap_or_default(),
+            Err(e) => {
+                tracing::warn!(card = %title, error = %e, "adapt: generation failed — deriving");
+                vec![]
+            }
+        };
+        // Every bullet ALWAYS gets variants: model output where it honours
+        // the contract, deterministic derivation where it does not. The job
+        // must finish 100% or the style switch never becomes instant.
+        for (j, (bullet_id, base)) in bullets.iter().enumerate() {
+            let (raw_short, raw_long) = model_vars
+                .get(j)
+                .map(|v| (v.short.as_str(), v.long.as_str()))
+                .unwrap_or(("", ""));
+            let short = sanitize_short(base, raw_short);
+            let long = sanitize_long(base, raw_long);
+            write(bullet_id, &short, &long)?;
+            adapted += 1;
+        }
+        on_progress(i + 1, total);
+    }
+    Ok(adapted)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -158,6 +283,23 @@ mod tests {
         let chunks = chunk_text(&text, 1400);
         assert!(chunks.len() >= 3);
         assert!(chunks.iter().all(|c| c.len() <= 1400));
+    }
+
+    #[test]
+    fn variant_sanitizers_enforce_the_contract() {
+        let base = "moved 40 services, zero downtime";
+        // Model echoing the bullet or rambling → deterministic derivation.
+        assert_eq!(sanitize_short(base, base), "moved 40");
+        assert_eq!(sanitize_short(base, "40 services"), "40 services");
+        assert_eq!(sanitize_short("Cut infra cost 35 percent", ""), "Cut infra");
+        // Long must be fuller than base but never prose-ballooned.
+        assert_eq!(sanitize_long(base, "short"), base);
+        let good = "moved all 40 services with zero downtime, blue-green rollout";
+        assert_eq!(sanitize_long(base, good), good);
+        assert_eq!(
+            sanitize_long(base, &format!("{} extra words {}", good, "x ".repeat(12))).as_str(),
+            base
+        );
     }
 
     #[test]

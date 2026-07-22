@@ -386,6 +386,50 @@ async fn generate_cards(
     })
 }
 
+/// Backfills missing short/long bullet variants so the length setting can
+/// restyle the whole corpus instantly. No-op when everything has variants.
+#[tauri::command]
+async fn adapt_corpus(app: tauri::AppHandle) -> Result<usize, String> {
+    let (choice, work) = {
+        let db = app.state::<Db>();
+        let conn = db.conn.lock().map_err(|e| e.to_string())?;
+        let work = store::cards_needing_variants(&conn)?;
+        if work.is_empty() {
+            return Ok(0);
+        }
+        let choice = live::resolve_provider(&app, &conn).ok_or(
+            "no engine configured — download a local model or add an API key in settings",
+        )?;
+        (choice, work)
+    };
+    let app2 = app.clone();
+    let app3 = app.clone();
+    let adapted = ingest::adapt_variants(
+        &choice,
+        work,
+        move |bullet_id, short, long| {
+            let db = app3.state::<Db>();
+            let conn = db.conn.lock().map_err(|e| e.to_string())?;
+            store::set_bullet_variants(&conn, bullet_id, short, long)
+        },
+        move |done, total| {
+            app2.emit_to("dashboard", "adapt:progress", IngestProgress { done, total })
+                .ok();
+        },
+    )
+    .await?;
+    // Restyle whatever the overlay is currently showing.
+    live::restyle_current_card(&app).ok();
+    Ok(adapted)
+}
+
+/// Re-emits the overlay's current card in the active bullet-length style —
+/// called after the style setting changes so the switch is instant.
+#[tauri::command]
+fn restyle_card(app: tauri::AppHandle) -> Result<(), String> {
+    live::restyle_current_card(&app)
+}
+
 #[tauri::command]
 fn set_api_key(provider: String, key: String) -> Result<(), String> {
     if key.trim().is_empty() {
@@ -463,6 +507,8 @@ pub fn run() {
             get_llm_config,
             set_llm_config,
             generate_cards,
+            adapt_corpus,
+            restyle_card,
             set_api_key
         ])
         .setup(move |app| {

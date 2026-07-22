@@ -99,9 +99,13 @@ export function Dashboard() {
     const unGen = listen<{ done: number; total: number }>("ingest:progress", (e) =>
       setGenProgress(`part ${e.payload.done}/${e.payload.total}`),
     );
+    const unAdapt = listen<{ done: number; total: number }>("adapt:progress", (e) =>
+      setGenProgress(`adapting cards ${e.payload.done}/${e.payload.total}`),
+    );
     return () => {
       clearInterval(t);
       unGen.then((f) => f()).catch(() => {});
+      unAdapt.then((f) => f()).catch(() => {});
     };
   }, [refresh]);
 
@@ -328,9 +332,24 @@ export function Dashboard() {
             Bullet length
             <select
               value={style}
-              onChange={(e) => {
+              onChange={async (e) => {
                 setStyle(e.target.value);
-                invoke("set_llm_config", { bulletStyle: e.target.value }).catch(() => {});
+                try {
+                  await invoke("set_llm_config", { bulletStyle: e.target.value });
+                  // Whole corpus restyles in the moment: overlay re-emits its
+                  // card; missing variants are backfilled in the background.
+                  await invoke("restyle_card");
+                  refresh();
+                  const adapted = await invoke<number>("adapt_corpus");
+                  if (adapted > 0) {
+                    await invoke("restyle_card");
+                    refresh();
+                  }
+                } catch (err) {
+                  setErr(String(err));
+                } finally {
+                  setGenProgress(null);
+                }
               }}
               style={{
                 marginLeft: 6,

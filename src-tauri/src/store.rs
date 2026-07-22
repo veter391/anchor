@@ -130,11 +130,38 @@ pub fn import_cards(
     write_import(conn, parsed, vectors, session_id)
 }
 
-const CARD_SELECT: &str =
-    "SELECT c.id, c.title, c.tags, c.language, c.source,
-            COALESCE((SELECT group_concat(text, '\u{1f}' ORDER BY position)
-                      FROM bullets WHERE card_id = c.id), '')
-     FROM cards c";
+/// The active bullet-length mode ("default" | "short" | "long"). Reading it
+/// here keeps every card read path — dashboard AND overlay — in the chosen
+/// style with zero caller changes (owner decision: switching the setting
+/// restyles the whole corpus in the moment).
+pub fn display_style(conn: &Connection) -> String {
+    conn.query_row(
+        "SELECT value FROM settings WHERE key = 'bullet_style'",
+        [],
+        |r| r.get::<_, String>(0),
+    )
+    .unwrap_or_else(|_| "default".into())
+}
+
+/// Bullet text column expression for a style: variants fall back to the
+/// canonical text until the adapt job has produced them.
+fn bullet_expr(style: &str) -> &'static str {
+    match style {
+        "short" => "COALESCE(text_short, text)",
+        "long" => "COALESCE(text_long, text)",
+        _ => "text",
+    }
+}
+
+fn card_select(style: &str) -> String {
+    format!(
+        "SELECT c.id, c.title, c.tags, c.language, c.source,
+                COALESCE((SELECT group_concat({expr}, '\u{1f}' ORDER BY position)
+                          FROM bullets WHERE card_id = c.id), '')
+         FROM cards c",
+        expr = bullet_expr(style)
+    )
+}
 
 fn row_to_card(r: &rusqlite::Row<'_>) -> rusqlite::Result<CardRow> {
     let bullets_joined: String = r.get(5)?;
@@ -153,17 +180,69 @@ fn row_to_card(r: &rusqlite::Row<'_>) -> rusqlite::Result<CardRow> {
 }
 
 pub fn list_cards(conn: &Connection) -> Result<Vec<CardRow>, String> {
-    let sql = format!("{CARD_SELECT} ORDER BY c.created_at DESC, c.title");
+    let sql = format!(
+        "{} ORDER BY c.created_at DESC, c.title",
+        card_select(&display_style(conn))
+    );
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
     let rows = stmt.query_map([], row_to_card).map_err(|e| e.to_string())?;
     rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
 }
 
 pub fn get_card(conn: &Connection, card_id: &str) -> Result<Option<CardRow>, String> {
-    let sql = format!("{CARD_SELECT} WHERE c.id = ?1");
+    let sql = format!("{} WHERE c.id = ?1", card_select(&display_style(conn)));
     conn.query_row(&sql, params![card_id], row_to_card)
         .optional()
         .map_err(|e| e.to_string())
+}
+
+/// One adapt-job unit: (card_id, title, [(bullet_id, canonical_text)]).
+pub type VariantWorkItem = (String, String, Vec<(String, String)>);
+
+/// Bullets missing a length variant, grouped per card — the adapt job's
+/// work list.
+pub fn cards_needing_variants(conn: &Connection) -> Result<Vec<VariantWorkItem>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT b.card_id, c.title, b.id, b.text FROM bullets b
+             JOIN cards c ON c.id = b.card_id
+             WHERE b.text_short IS NULL OR b.text_long IS NULL
+             ORDER BY b.card_id, b.position",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+            ))
+        })
+        .map_err(|e| e.to_string())?;
+    let mut out: Vec<VariantWorkItem> = Vec::new();
+    for row in rows.flatten() {
+        let (card_id, title, bullet_id, text) = row;
+        match out.last_mut() {
+            Some((cid, _, list)) if *cid == card_id => list.push((bullet_id, text)),
+            _ => out.push((card_id, title, vec![(bullet_id, text)])),
+        }
+    }
+    Ok(out)
+}
+
+pub fn set_bullet_variants(
+    conn: &Connection,
+    bullet_id: &str,
+    short: &str,
+    long: &str,
+) -> Result<(), String> {
+    conn.execute(
+        "UPDATE bullets SET text_short = ?2, text_long = ?3 WHERE id = ?1",
+        params![bullet_id, short, long],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 /// Bullet embeddings of one card, in display order, decoded to f32.

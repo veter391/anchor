@@ -5,7 +5,7 @@
 use rusqlite::Connection;
 use std::path::Path;
 
-pub const SCHEMA_VERSION: i64 = 3;
+pub const SCHEMA_VERSION: i64 = 4;
 
 /// Registers sqlite-vec as an auto-extension. MUST run before any connection
 /// opens (the app calls it once at startup; benches/tests call it themselves).
@@ -50,7 +50,9 @@ CREATE TABLE IF NOT EXISTS bullets (
   id            TEXT PRIMARY KEY,
   card_id       TEXT NOT NULL REFERENCES cards(id) ON DELETE CASCADE,
   position      INTEGER NOT NULL,
-  text          TEXT NOT NULL,
+  text          TEXT NOT NULL,          -- canonical (default length)
+  text_short    TEXT,                   -- 1-2 word variant (adapt job)
+  text_long     TEXT,                   -- fuller variant (adapt job)
   provenance    TEXT NOT NULL DEFAULT 'prepared'
 );
 
@@ -144,6 +146,16 @@ pub fn open_and_migrate(path: &Path) -> rusqlite::Result<Connection> {
                       COALESCE((SELECT group_concat(text, ' ' ORDER BY position)
                                 FROM bullets WHERE card_id = c.id), '')
                FROM cards c;",
+        )?;
+    }
+
+    if user_version > 0 && user_version < 4 {
+        // v4: per-bullet length variants (owner decision 2026-07-23 — the
+        // bullet-length setting restyles the WHOLE corpus instantly, so the
+        // variants are stored, not regenerated). Base `text` stays canonical.
+        conn.execute_batch(
+            "ALTER TABLE bullets ADD COLUMN text_short TEXT;
+             ALTER TABLE bullets ADD COLUMN text_long  TEXT;",
         )?;
     }
 
