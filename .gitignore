@@ -23,6 +23,7 @@ target/
 src-tauri/gen/
 
 # ── Models & benchmark artifacts (downloaded at first run) ────
+.fastembed_cache/
 /models/
 *.onnx
 *.ort
