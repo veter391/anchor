@@ -1,0 +1,52 @@
+@import "tailwindcss";
+
+/* Design tokens — single source: Documents/06_DESIGN.md */
+:root {
+  --bg: #0e1116;
+  --bg-elevated: #161b22;
+  --border: #262c36;
+
+  --text: #e8edf2;
+  --text-dim: #5a6472;
+  --text-muted: #8a94a3;
+
+  --accent: #4fd1c5;
+  --accent-bg: rgba(79, 209, 197, 0.1);
+
+  --assembled: #c99a4e;
+  --model-know: #b48ede;
+  --panic: #e06c75;
+  --green: #4fbf7b;
+  --red: #e06c75;
+
+  --font: "Inter", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", Consolas, monospace;
+
+  --size-title: 13px;
+  --size-bullet: 18px; /* THE number. Do not shrink. */
+  --size-meta: 11px;
+  --leading: 1.45;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  padding: 0;
+  font-family: var(--font);
+}
+
+/* The overlay window is transparent; only the cards paint pixels. */
+.overlay-body,
+.overlay-body #root {
+  background: transparent;
+  overflow: hidden;
+  height: 100%;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition: none !important;
+    animation: none !important;
+  }
+}
