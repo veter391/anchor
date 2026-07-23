@@ -520,8 +520,10 @@ pub(crate) fn resolve_provider(
     // Local: the active downloaded model (default = registry default).
     let model_id = get("local_model")
         .or_else(|| crate::mode2::models::REGISTRY.iter().find(|m| m.is_default).map(|m| m.id.to_string()))?;
-    let app_data = app.path().app_data_dir().ok()?;
-    let model_path = crate::mode2::models::model_path(&app_data, &model_id);
+    // Portable data folder — MUST match list/download/delete_model, else a
+    // freshly-downloaded model isn't found here and Local mode silently fails.
+    let data_dir = crate::paths::data_dir();
+    let model_path = crate::mode2::models::model_path(&data_dir, &model_id);
     if !model_path.exists() {
         return None; // not downloaded yet — stay on the panic card
     }

@@ -93,8 +93,9 @@ pub fn start_audio(app: tauri::AppHandle, audio: tauri::State<'_, AudioState>) -
 
     // The ASR model load reads ~633 MB from disk over several seconds — do it
     // BEFORE taking the state lock so stop/status stay responsive during start.
-    let app_data = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    let model_dir = asr::model_dir(&app_data)
+    // Portable data folder, consistent with every other model path.
+    let data_dir = crate::paths::data_dir();
+    let model_dir = asr::model_dir(&data_dir)
         .ok_or("no ASR model found — set ANCHOR_ASR_MODEL_DIR or install the model")?;
     let threads = std::thread::available_parallelism()
         .map(|n| n.get() as i32)

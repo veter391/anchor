@@ -245,17 +245,31 @@ pub fn set_bullet_variants(
     Ok(())
 }
 
-/// Repairs prepared cards whose canonical bullets drifted into prose (older
-/// ingested cards, pre-tightener): rewrites each over-long bullet to the tight
-/// Recommended keyword form, keeps the fuller original as `text_long`, drops
-/// within-card near-duplicates, and RE-EMBEDS + rebuilds FTS for every touched
-/// card so retrieval stays consistent with the new text. Idempotent — a corpus
-/// that is already tight is left untouched. Returns the number of cards fixed.
-pub fn retighten_corpus(conn: &mut Connection, embedder: &Embedder) -> Result<usize, String> {
+/// One card's retighten plan — computed WITHOUT embedding or a write lock.
+pub struct RetightenFix {
+    pub card_id: String,
+    pub title: String,
+    /// kept bullets: (bullet_id, new_text, new_long, new_short)
+    pub keep: Vec<(String, String, String, String)>,
+    /// bullet ids to delete (near-duplicates)
+    pub drop_ids: Vec<String>,
+}
+
+/// The embeddings a fix needs, computed off-lock and handed to `retighten_apply`.
+pub struct RetightenVecs {
+    pub card_vec: Vec<f32>,
+    pub bullet_vecs: Vec<(String, Vec<f32>)>,
+    pub fts_text: String,
+}
+
+/// Plans the repair of prepared cards whose canonical bullets drifted into
+/// prose (older ingested cards): the tight rewrite, kept `text_long`, and
+/// within-card duplicate drops. Pure read + compute — NO embedding, so the
+/// caller can drop the DB lock before the expensive embed pass (the live
+/// ticker needs the same lock every tick). Empty when the corpus is tight.
+pub fn retighten_plan(conn: &Connection) -> Result<Vec<RetightenFix>, String> {
     use crate::textfmt::{derive_short, is_too_long, tighten_default};
 
-    // Gather prepared cards that need work (any over-long bullet), under a
-    // read pass, so the embedding work below runs without a write lock held.
     let mut cards: Vec<(String, String)> = Vec::new();
     {
         let mut stmt = conn
@@ -269,19 +283,7 @@ pub fn retighten_corpus(conn: &mut Connection, embedder: &Embedder) -> Result<us
         }
     }
 
-    struct Fix {
-        card_id: String,
-        title: String,
-        // kept bullets: (bullet_id, new_text, new_long, new_short)
-        keep: Vec<(String, String, String, String)>,
-        // bullet ids to delete (near-duplicates)
-        drop_ids: Vec<String>,
-        card_vec: Vec<f32>,
-        bullet_vecs: Vec<(String, Vec<f32>)>,
-        fts_text: String,
-    }
-    let mut fixes: Vec<Fix> = Vec::new();
-
+    let mut fixes: Vec<RetightenFix> = Vec::new();
     for (card_id, title) in cards.drain(..) {
         let mut rows: Vec<(String, String, Option<String>)> = Vec::new();
         {
@@ -304,7 +306,6 @@ pub fn retighten_corpus(conn: &mut Connection, embedder: &Embedder) -> Result<us
             }
         }
         let needs = rows.iter().any(|(_, t, _)| is_too_long(t));
-        // Also repair a card that carries an exact within-card duplicate.
         let has_dup = {
             let mut seen = std::collections::HashSet::new();
             rows.iter().any(|(_, t, _)| !seen.insert(t.to_lowercase()))
@@ -322,43 +323,27 @@ pub fn retighten_corpus(conn: &mut Connection, embedder: &Embedder) -> Result<us
                 drop_ids.push(bid);
                 continue;
             }
-            // Preserve the fuller original as the Long variant if not set.
             let new_long = long.unwrap_or_else(|| text.trim().trim_end_matches('.').to_string());
             let new_short = derive_short(&tight);
             keep.push((bid, tight, new_long, new_short));
         }
-
-        // Re-embed: bullet passages (new canonical) + card passage (title +
-        // bullets joined), mirroring embed_import.
-        let bullet_items: Vec<(String, String)> =
-            keep.iter().map(|(_, t, _, _)| (String::new(), t.clone())).collect();
-        let bullet_embs = embedder.embed_passages(&bullet_items)?;
-        let joined = keep.iter().map(|(_, t, _, _)| t.clone()).collect::<Vec<_>>().join("; ");
-        let card_emb = embedder.embed_passages(&[(title.clone(), joined)])?;
-        let bullet_vecs = keep
-            .iter()
-            .map(|(bid, _, _, _)| bid.clone())
-            .zip(bullet_embs)
-            .collect::<Vec<_>>();
-        let fts_text = keep.iter().map(|(_, t, _, _)| t.clone()).collect::<Vec<_>>().join(" ");
-
-        fixes.push(Fix {
-            card_id,
-            title,
-            keep,
-            drop_ids,
-            card_vec: card_emb.into_iter().next().unwrap_or_default(),
-            bullet_vecs,
-            fts_text,
-        });
+        fixes.push(RetightenFix { card_id, title, keep, drop_ids });
     }
+    Ok(fixes)
+}
 
+/// Applies a plan (with its off-lock-computed embeddings) in one transaction.
+/// `vecs` is parallel to `fixes`. Re-embeds + rebuilds FTS per touched card.
+pub fn retighten_apply(
+    conn: &mut Connection,
+    fixes: &[RetightenFix],
+    vecs: &[RetightenVecs],
+) -> Result<usize, String> {
     if fixes.is_empty() {
         return Ok(0);
     }
-
     let tx = conn.transaction().map_err(|e| e.to_string())?;
-    for f in &fixes {
+    for (f, v) in fixes.iter().zip(vecs) {
         for did in &f.drop_ids {
             // vec row rides the bullet delete via trg_bullets_delete.
             tx.execute("DELETE FROM bullets WHERE id = ?1", params![did])
@@ -371,7 +356,7 @@ pub fn retighten_corpus(conn: &mut Connection, embedder: &Embedder) -> Result<us
             )
             .map_err(|e| e.to_string())?;
         }
-        for (bid, vec) in &f.bullet_vecs {
+        for (bid, vec) in &v.bullet_vecs {
             tx.execute("DELETE FROM bullet_vec WHERE bullet_id = ?1", params![bid])
                 .map_err(|e| e.to_string())?;
             tx.execute(
@@ -384,14 +369,14 @@ pub fn retighten_corpus(conn: &mut Connection, embedder: &Embedder) -> Result<us
             .map_err(|e| e.to_string())?;
         tx.execute(
             "INSERT INTO card_vec (card_id, embedding) VALUES (?1, ?2)",
-            params![f.card_id, vec_to_blob(&f.card_vec)],
+            params![f.card_id, vec_to_blob(&v.card_vec)],
         )
         .map_err(|e| e.to_string())?;
         tx.execute("DELETE FROM card_fts WHERE card_id = ?1", params![f.card_id])
             .map_err(|e| e.to_string())?;
         tx.execute(
             "INSERT INTO card_fts (card_id, title, bullets_text) VALUES (?1, ?2, ?3)",
-            params![f.card_id, f.title, f.fts_text],
+            params![f.card_id, f.title, v.fts_text],
         )
         .map_err(|e| e.to_string())?;
     }

@@ -607,8 +607,38 @@ fn retighten_corpus(
     db: tauri::State<'_, Db>,
     embedder: tauri::State<'_, Arc<Embedder>>,
 ) -> Result<usize, String> {
+    // Plan under a SHORT read lock, embed OFF the lock (embedding is slow and
+    // the live ticker needs db.conn every tick — audit 2026-07-23), then apply
+    // under a short write lock. Mirrors import_markdown's discipline.
+    let fixes = {
+        let conn = db.conn.lock().map_err(|e| e.to_string())?;
+        store::retighten_plan(&conn)?
+    };
+    if fixes.is_empty() {
+        return Ok(0);
+    }
+    let mut vecs = Vec::with_capacity(fixes.len());
+    for f in &fixes {
+        let bullet_items: Vec<(String, String)> =
+            f.keep.iter().map(|(_, t, _, _)| (String::new(), t.clone())).collect();
+        let bullet_embs = embedder.embed_passages(&bullet_items)?;
+        let joined = f.keep.iter().map(|(_, t, _, _)| t.clone()).collect::<Vec<_>>().join("; ");
+        let card_vec = embedder
+            .embed_passages(&[(f.title.clone(), joined)])?
+            .into_iter()
+            .next()
+            .unwrap_or_default();
+        let bullet_vecs: Vec<(String, Vec<f32>)> = f
+            .keep
+            .iter()
+            .map(|(bid, _, _, _)| bid.clone())
+            .zip(bullet_embs)
+            .collect();
+        let fts_text = f.keep.iter().map(|(_, t, _, _)| t.clone()).collect::<Vec<_>>().join(" ");
+        vecs.push(store::RetightenVecs { card_vec, bullet_vecs, fts_text });
+    }
     let mut conn = db.conn.lock().map_err(|e| e.to_string())?;
-    store::retighten_corpus(&mut conn, &embedder)
+    store::retighten_apply(&mut conn, &fixes, &vecs)
 }
 
 #[tauri::command]
