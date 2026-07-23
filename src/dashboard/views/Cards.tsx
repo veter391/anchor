@@ -31,6 +31,10 @@ interface GenerateReport {
 
 const looksLikeReadyCards = (t: string) => /^\s*##\s+\S/m.test(t);
 
+// Native <option> popups ignore most inherited styling — set colours
+// explicitly so the dropdown is readable in dark mode.
+const optStyle: React.CSSProperties = { background: "#161b22", color: "#e8edf2" };
+
 export function Cards() {
   const [cards, setCards] = useState<CardRow[]>([]);
   const [text, setText] = useState("");
@@ -239,17 +243,24 @@ export function Cards() {
                 value={style}
                 onChange={(e) => changeStyle(e.target.value)}
                 style={{
-                  background: "transparent",
+                  background: "var(--bg-elevated)",
                   color: "var(--text)",
+                  colorScheme: "dark",
                   border: "none",
                   outline: "none",
                   cursor: "pointer",
                   fontSize: 12.5,
                 }}
               >
-                <option value="default">Recommended</option>
-                <option value="short">Short</option>
-                <option value="long">Longer</option>
+                <option style={optStyle} value="default">
+                  Recommended
+                </option>
+                <option style={optStyle} value="short">
+                  Short
+                </option>
+                <option style={optStyle} value="long">
+                  Longer
+                </option>
               </select>
             </div>
 

@@ -9,6 +9,10 @@
    glance-legible card — only the accent (highlight colour) syncs to it. */
 
 :root {
+  /* Native controls (select popups, scrollbars, checkboxes) follow the theme
+     — fixes the low-contrast dropdown options in dark mode. */
+  color-scheme: dark;
+
   /* Surface — dark (default) */
   --bg: #0e1116;
   --bg-elevated: #161b22;
@@ -63,6 +67,7 @@
 
 /* ── Light theme (dashboard only; overlay never sets it) ─────────── */
 :root[data-theme="light"] {
+  color-scheme: light;
   --bg: #ffffff;
   --bg-elevated: #faf7f4; /* warm off-white paper */
   --bg-soft: #f4efe9;

@@ -208,15 +208,24 @@ export function Mode2Settings() {
                 marginLeft: 8,
                 background: "var(--bg-elevated)",
                 color: "var(--text)",
+                colorScheme: "dark",
                 border: "1px solid var(--border)",
                 borderRadius: 6,
                 padding: "4px 8px",
               }}
             >
-              <option value="openrouter">OpenRouter (any model, one key)</option>
-              <option value="groq">Groq</option>
-              <option value="openai">OpenAI</option>
-              <option value="custom">Custom (OpenAI-compatible)</option>
+              <option style={{ background: "#161b22", color: "#e8edf2" }} value="openrouter">
+                OpenRouter (any model, one key)
+              </option>
+              <option style={{ background: "#161b22", color: "#e8edf2" }} value="groq">
+                Groq
+              </option>
+              <option style={{ background: "#161b22", color: "#e8edf2" }} value="openai">
+                OpenAI
+              </option>
+              <option style={{ background: "#161b22", color: "#e8edf2" }} value="custom">
+                Custom (OpenAI-compatible)
+              </option>
             </select>
           </label>
           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
