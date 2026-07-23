@@ -1,34 +1,79 @@
 @import "tailwindcss";
 
-/* Design tokens — single source: Documents/06_DESIGN.md */
+/* ── Design tokens ──────────────────────────────────────────────────
+   Source: Documents/06_DESIGN.md. Two axes are user-switchable and set as
+   attributes on <html> per window:
+     data-accent = coral (default) | teal | amber
+     data-theme  = dark  (default) | light
+   The overlay window never sets data-theme, so it always keeps its dark,
+   glance-legible card — only the accent (highlight colour) syncs to it. */
+
 :root {
+  /* Surface — dark (default) */
   --bg: #0e1116;
   --bg-elevated: #161b22;
+  --bg-soft: #1b212b; /* raised panels, softer than a hard border box */
   --border: #262c36;
+  --border-soft: #1e2530;
 
   --text: #e8edf2;
-  --text-soft: #b8c1cc; /* uncovered-but-not-next: readable, quieter than the highlight */
-  --text-dim: #6b7684; /* covered bullets: receded by design, ≥4:1 legible */
+  --text-soft: #b8c1cc;
+  --text-dim: #6b7684;
   --text-muted: #8a94a3;
 
-  --accent: #4fd1c5;
-  --accent-bg: rgba(79, 209, 197, 0.1);
+  /* Accent — CORAL by default (warm). */
+  --accent: #ff6f5e;
+  --accent-strong: #ff8a76; /* hover / brighter */
+  --accent-bg: rgba(255, 111, 94, 0.13);
+  --accent-glow: rgba(255, 111, 94, 0.14);
 
+  /* Provenance + states (stable across accents) */
   --assembled: #c99a4e;
   --model-know: #b48ede;
-  /* "Unexpected question" card: calm amber-orange, NOT alarm red — it should
-     read as "heads up", not "panic". */
   --unexpected: #e8944a;
   --green: #4fbf7b;
   --red: #e06c75;
 
-  --font: "Inter", "Segoe UI", system-ui, sans-serif;
-  --font-mono: "JetBrains Mono", Consolas, monospace;
+  --font: "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", "Cascadia Code", Consolas, monospace;
 
   --size-title: 13px;
   --size-bullet: 18px; /* THE number. Do not shrink. */
   --size-meta: 11px;
   --leading: 1.45;
+
+  --radius: 14px;
+  --shadow-soft: 0 1px 0 rgba(255, 255, 255, 0.02), 0 8px 30px rgba(0, 0, 0, 0.35);
+}
+
+/* ── Accents ─────────────────────────────────────────────────────── */
+:root[data-accent="teal"] {
+  --accent: #4fd1c5;
+  --accent-strong: #6fe0d6;
+  --accent-bg: rgba(79, 209, 197, 0.12);
+  --accent-glow: rgba(79, 209, 197, 0.12);
+}
+:root[data-accent="amber"] {
+  --accent: #eab04a;
+  --accent-strong: #f4c66e;
+  --accent-bg: rgba(234, 176, 74, 0.13);
+  --accent-glow: rgba(234, 176, 74, 0.14);
+}
+
+/* ── Light theme (dashboard only; overlay never sets it) ─────────── */
+:root[data-theme="light"] {
+  --bg: #ffffff;
+  --bg-elevated: #faf7f4; /* warm off-white paper */
+  --bg-soft: #f4efe9;
+  --border: #e7e1d9;
+  --border-soft: #efeae3;
+
+  --text: #1a1b1e;
+  --text-soft: #3f434a;
+  --text-dim: #8b8f97;
+  --text-muted: #5c616b;
+
+  --shadow-soft: 0 1px 0 rgba(0, 0, 0, 0.02), 0 8px 26px rgba(30, 20, 16, 0.08);
 }
 
 html,
@@ -37,6 +82,7 @@ body,
   margin: 0;
   padding: 0;
   font-family: var(--font);
+  -webkit-font-smoothing: antialiased;
 }
 
 /* The overlay window is transparent; only the cards paint pixels. */
@@ -45,6 +91,18 @@ body,
   background: transparent;
   overflow: hidden;
   height: 100%;
+}
+
+/* A whisper of warm grain over the dashboard backdrop — texture, never busy. */
+.grain::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  opacity: 0.35;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.5'/%3E%3C/svg%3E");
+  mix-blend-mode: overlay;
 }
 
 /* Card change = 120 ms cross-fade (06_DESIGN hard rule #5). */
@@ -58,6 +116,50 @@ body,
 }
 .card-fade {
   animation: card-fade-in 120ms ease-out;
+}
+
+/* Gentle entrance for dashboard views. */
+@keyframes rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.rise-in {
+  animation: rise-in 240ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* Micro-interactions (150-300ms, transform/opacity only). */
+.lift {
+  transition:
+    transform 180ms cubic-bezier(0.22, 1, 0.36, 1),
+    border-color 180ms,
+    box-shadow 180ms;
+}
+.lift:hover {
+  transform: translateY(-2px);
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+}
+.press {
+  transition: filter 150ms, transform 120ms;
+}
+.press:hover {
+  filter: brightness(1.06);
+}
+.press:active {
+  transform: translateY(1px);
+}
+.link {
+  color: var(--accent);
+  cursor: pointer;
+  transition: filter 150ms;
+}
+.link:hover {
+  filter: brightness(1.12);
 }
 
 @media (prefers-reduced-motion: reduce) {

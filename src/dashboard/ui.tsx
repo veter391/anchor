@@ -1,61 +1,116 @@
 //! Shared dashboard UI primitives — tokens, panel/card styles, the nav icon
-//! set. Keeps the five views consistent and DRY. Palette is the owner-locked
-//! one from styles.css (06_DESIGN); this only composes it.
+//! set, the brand mark. Palette is token-driven (styles.css); accent + theme
+//! switch live via data-accent / data-theme on <html>.
 
 import type { CSSProperties, ReactNode } from "react";
+import markUrl from "../assets/anchor-mark.png";
 
 export const panel: CSSProperties = {
-  background: "var(--bg)",
-  border: "1px solid var(--border)",
-  borderRadius: 12,
+  background: "var(--bg-soft)",
+  border: "1px solid var(--border-soft)",
+  borderRadius: "var(--radius)",
   padding: 18,
+  boxShadow: "var(--shadow-soft)",
 };
 
 export const btn: CSSProperties = {
-  background: "var(--bg)",
-  color: "var(--accent)",
-  border: "1px solid var(--accent)",
-  borderRadius: 8,
-  padding: "8px 16px",
+  background: "var(--accent)",
+  color: "#12100f",
+  border: "1px solid transparent",
+  borderRadius: 10,
+  padding: "9px 16px",
   fontSize: 14,
+  fontWeight: 600,
   cursor: "pointer",
-  transition: "background 160ms, border-color 160ms, color 160ms",
+  transition: "filter 160ms, transform 160ms",
 };
 
 export const btnGhost: CSSProperties = {
-  ...btn,
+  background: "transparent",
+  color: "var(--text)",
   border: "1px solid var(--border)",
-  color: "var(--text-muted)",
+  borderRadius: 10,
+  padding: "9px 16px",
+  fontSize: 14,
+  cursor: "pointer",
+  transition: "border-color 160ms, background 160ms, color 160ms",
 };
 
-/** A soft branded backdrop — faint accent glow top-left, never busy (owner:
- *  no bare backgrounds, but nothing that pulls the eye). */
+/** A warm branded backdrop — a soft accent glow, never busy. */
 export const pageBackdrop: CSSProperties = {
   background:
-    "radial-gradient(1200px 500px at 8% -10%, rgba(79,209,197,0.06), transparent 60%)," +
-    "radial-gradient(900px 500px at 100% 0%, rgba(180,142,222,0.05), transparent 55%)," +
+    "radial-gradient(1100px 460px at 6% -12%, var(--accent-glow), transparent 60%)," +
+    "radial-gradient(760px 420px at 102% 4%, rgba(180,142,222,0.05), transparent 55%)," +
     "var(--bg-elevated)",
 };
 
-export function SectionTitle({ children, hint }: { children: ReactNode; hint?: string }) {
+export function SectionTitle({
+  children,
+  hint,
+  emoji,
+}: {
+  children: ReactNode;
+  hint?: string;
+  emoji?: string;
+}) {
   return (
     <div style={{ marginBottom: 12 }}>
       <h3
         style={{
           margin: 0,
           fontSize: 12,
-          letterSpacing: "0.08em",
+          letterSpacing: "0.09em",
           textTransform: "uppercase",
           color: "var(--text-muted)",
+          display: "flex",
+          alignItems: "center",
+          gap: 7,
         }}
       >
+        {emoji && (
+          <span aria-hidden style={{ fontSize: 13 }}>
+            {emoji}
+          </span>
+        )}
         {children}
       </h3>
       {hint && (
-        <p style={{ margin: "4px 0 0", fontSize: 13, color: "var(--text-muted)" }}>{hint}</p>
+        <p style={{ margin: "5px 0 0", fontSize: 13, color: "var(--text-muted)" }}>{hint}</p>
       )}
     </div>
   );
+}
+
+/** The app mark (teal fish-anchor — brand-locked, does not follow the accent). */
+export function Mark({ size = 28 }: { size?: number }) {
+  return (
+    <img
+      src={markUrl}
+      alt="Anchor"
+      width={size}
+      height={size}
+      style={{ display: "block", borderRadius: size * 0.28 }}
+    />
+  );
+}
+
+export function Wordmark({ size = 24 }: { size?: number }) {
+  return (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 9 }}>
+      <Mark size={size} />
+      <span style={{ fontWeight: 600, letterSpacing: "0.01em", fontSize: size * 0.72 }}>
+        Anchor
+      </span>
+    </span>
+  );
+}
+
+/** Applies accent + theme to <html> (both are token-switch attributes). Any
+ *  component can call it — the document root is shared. */
+export function applyAppearance(a: { accent?: string; theme?: string }) {
+  const el = document.documentElement;
+  if (a.accent) el.setAttribute("data-accent", a.accent);
+  if (a.theme) el.setAttribute("data-theme", a.theme);
 }
 
 export type NavKey = "general" | "sessions" | "cards" | "settings" | "about";
@@ -110,27 +165,4 @@ export function NavIcon({ name, size = 22 }: { name: NavKey; size?: number }) {
         </svg>
       );
   }
-}
-
-/** The little fish-anchor wordmark lockup used on General + rail top. */
-export function Wordmark({ size = 20 }: { size?: number }) {
-  return (
-    <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
-      <span
-        aria-hidden
-        style={{
-          width: size,
-          height: size,
-          borderRadius: 6,
-          background: "var(--accent)",
-          display: "inline-block",
-          maskImage:
-            "radial-gradient(circle at 50% 62%, transparent 20%, black 21%)",
-          WebkitMaskImage:
-            "radial-gradient(circle at 50% 62%, transparent 20%, black 21%)",
-        }}
-      />
-      <span style={{ fontWeight: 600, letterSpacing: "0.01em" }}>Anchor</span>
-    </span>
-  );
 }

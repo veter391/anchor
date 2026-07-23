@@ -533,6 +533,69 @@ fn restyle_card(app: tauri::AppHandle) -> Result<(), String> {
     live::restyle_current_card(&app)
 }
 
+// ── Appearance (Phase 6): accent, light/dark, overlay transparency ──
+
+#[derive(serde::Serialize, Clone)]
+struct Appearance {
+    accent: String,
+    theme: String,
+    /// Overlay card opacity, 40..100 (%). 100 = fully opaque (default).
+    overlay_opacity: i64,
+}
+
+fn read_appearance(conn: &Connection) -> Appearance {
+    Appearance {
+        accent: setting_get(conn, "ui_accent").unwrap_or_else(|| "coral".into()),
+        theme: setting_get(conn, "ui_theme").unwrap_or_else(|| "dark".into()),
+        overlay_opacity: setting_get(conn, "overlay_opacity")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(100),
+    }
+}
+
+#[tauri::command]
+fn get_appearance(db: tauri::State<'_, Db>) -> Result<Appearance, String> {
+    let conn = db.conn.lock().map_err(|e| e.to_string())?;
+    Ok(read_appearance(&conn))
+}
+
+#[tauri::command]
+fn set_appearance(
+    app: tauri::AppHandle,
+    db: tauri::State<'_, Db>,
+    accent: Option<String>,
+    theme: Option<String>,
+    overlay_opacity: Option<i64>,
+) -> Result<(), String> {
+    {
+        let conn = db.conn.lock().map_err(|e| e.to_string())?;
+        if let Some(a) = &accent {
+            if matches!(a.as_str(), "coral" | "teal" | "amber") {
+                setting_set(&conn, "ui_accent", a)?;
+            }
+        }
+        if let Some(t) = &theme {
+            if matches!(t.as_str(), "dark" | "light") {
+                setting_set(&conn, "ui_theme", t)?;
+            }
+        }
+        if let Some(o) = overlay_opacity {
+            setting_set(&conn, "overlay_opacity", &o.clamp(40, 100).to_string())?;
+        }
+        let updated = read_appearance(&conn);
+        // Overlay lives in its own window — push the change so it restyles live
+        // (accent highlight + card opacity) without a reload.
+        app.emit_to("overlay", "appearance:changed", &updated).ok();
+    }
+    Ok(())
+}
+
+/// App version (from Cargo) for the corner badge + About.
+#[tauri::command]
+fn app_version() -> String {
+    env!("CARGO_PKG_VERSION").to_string()
+}
+
 /// Self-healing corpus cleanup: repairs prepared cards whose canonical bullets
 /// drifted into prose (older ingested cards, pre-tightener) to the tight
 /// Recommended keyword style, re-embedding as it goes. Idempotent; returns the
@@ -630,6 +693,9 @@ pub fn run() {
             create_session,
             set_session_status,
             delete_session,
+            get_appearance,
+            set_appearance,
+            app_version,
             set_api_key
         ])
         .setup(move |app| {

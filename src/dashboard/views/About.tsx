@@ -8,6 +8,7 @@ import { panel, SectionTitle, Wordmark } from "../ui";
 interface BootInfo {
   schema_version: number;
 }
+// version fetched separately (app_version command)
 
 const IS = [
   "A recall aid: your prepared cards, surfaced the moment the topic comes up.",
@@ -22,8 +23,10 @@ const ISNT = [
 
 export function About() {
   const [boot, setBoot] = useState<BootInfo | null>(null);
+  const [version, setVersion] = useState("");
   useEffect(() => {
     invoke<BootInfo>("boot_info").then(setBoot).catch(() => {});
+    invoke<string>("app_version").then(setVersion).catch(() => {});
   }, []);
 
   return (
@@ -64,8 +67,8 @@ export function About() {
       </section>
 
       <div style={{ color: "var(--text-dim)", fontSize: 12 }}>
-        Licence: AGPL-3.0 — use it, read it, fork it, but derivatives stay open.
-        {boot ? ` · schema v${boot.schema_version}` : ""}
+        {version ? `Anchor v${version} · ` : ""}Licence: AGPL-3.0 — use it, read it, fork it, but
+        derivatives stay open.{boot ? ` · schema v${boot.schema_version}` : ""}
       </div>
     </div>
   );

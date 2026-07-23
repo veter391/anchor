@@ -38,7 +38,10 @@ export const Card = forwardRef<HTMLDivElement, { card: CardData }>(
         ref={ref}
         className="card-fade"
         style={{
-          background: "var(--bg)",
+          // --card-alpha (from the transparency setting) fades the card so the
+          // desktop shows through; defaults to fully solid.
+          background:
+            "color-mix(in srgb, var(--bg) calc(var(--card-alpha, 1) * 100%), transparent)",
           border: "1px solid var(--border)",
           borderTop:
             card.source === "assembled"

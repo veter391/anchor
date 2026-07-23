@@ -1,14 +1,13 @@
 //! General — the friendly landing. A first-time, non-technical user opens
-//! Anchor here and understands what it is, the learn-first idea, and where to
-//! click. No terminal, no debug (06_DESIGN / 09_PLAN Phase 6 owner vision).
+//! Anchor here and gets it: what it is, the learn-first idea, where to click.
+//! Warm and editorial, not a stack of identical boxes.
 
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { panel, btn, btnGhost, Wordmark, type NavKey } from "../ui";
+import { panel, btn, Mark, type NavKey } from "../ui";
 
 interface BootInfo {
   cards: number;
-  embedder_loaded: boolean;
 }
 interface SessionRow {
   id: string;
@@ -20,22 +19,25 @@ interface SessionRow {
 const STEPS = [
   {
     n: "1",
+    emoji: "📚",
     title: "Learn",
-    body: "Anchor is useless until you study. Take the study prompt to whatever AI you learn with and actually learn the material.",
+    body: "Anchor is useless until you study. Take the study prompt to whatever AI you learn with — and actually learn it.",
     action: "Open study prompt",
     go: "cards" as NavKey,
   },
   {
     n: "2",
+    emoji: "✍️",
     title: "Build cards",
-    body: "Turn what you now know into anchor cards — six keywords, not sentences. Or drop in raw notes and let Anchor draft them.",
+    body: "Turn what you know into anchor cards — six keywords, never sentences. Or drop in raw notes and let Anchor draft them.",
     action: "Go to cards",
     go: "cards" as NavKey,
   },
   {
     n: "3",
+    emoji: "🎧",
     title: "Load & go",
-    body: "Make a session, drop your cards in, check both audio channels, take the call. The right card appears the moment the topic comes up.",
+    body: "Make a session, drop your cards in, take the call. The right card appears the moment the topic comes up.",
     action: "New session",
     go: "sessions" as NavKey,
   },
@@ -45,7 +47,7 @@ const HOW = [
   "It listens to both sides of the call, locally.",
   "It shows your right card the moment the topic comes up.",
   "It tracks which points you have already covered.",
-  "Nothing leaves your machine.",
+  "Nothing ever leaves your machine.",
 ];
 
 export function General({ onNavigate }: { onNavigate: (k: NavKey) => void }) {
@@ -60,155 +62,126 @@ export function General({ onNavigate }: { onNavigate: (k: NavKey) => void }) {
   }, []);
 
   return (
-    <div style={{ maxWidth: 920, margin: "0 auto", display: "grid", gap: 28 }}>
-      <header style={{ marginTop: 8 }}>
-        <Wordmark size={26} />
-        <h1 style={{ fontSize: 30, margin: "14px 0 6px", lineHeight: 1.15 }}>
+    <div style={{ maxWidth: 940, margin: "0 auto", display: "grid", gap: 40 }}>
+      {/* Hero — borderless, breathing */}
+      <header style={{ paddingTop: 6 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, color: "var(--text-muted)", fontSize: 14 }}>
+          <Mark size={22} />
+          <span>Welcome back 👋</span>
+        </div>
+        <h1 style={{ fontSize: 40, lineHeight: 1.08, margin: "18px 0 10px", letterSpacing: "-0.02em" }}>
           The right six words,
           <br />
-          in front of your eyes.
+          <span style={{ color: "var(--accent)" }}>the moment you need them.</span>
         </h1>
-        <p style={{ color: "var(--text-muted)", fontSize: 16, margin: 0, maxWidth: 620 }}>
-          A live notes overlay for your calls. You prepare your own cards; Anchor puts the right
-          one in front of you the moment the topic comes up — and tracks what you have covered.
-          <span style={{ color: "var(--accent)" }}> Prepared, not prompted.</span>
+        <p style={{ color: "var(--text-soft)", fontSize: 17, margin: 0, maxWidth: 600, lineHeight: 1.5 }}>
+          A live notes overlay for your calls. You prepare your own cards; Anchor surfaces the
+          right one as the topic comes up, and tracks what you have covered.
         </p>
       </header>
 
-      {/* The three steps */}
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))",
-          gap: 16,
-        }}
-      >
-        {STEPS.map((s) => (
-          <div
-            key={s.n}
-            style={{
-              ...panel,
-              display: "flex",
-              flexDirection: "column",
-              gap: 10,
-            }}
-          >
-            <div
+      {/* Three steps — light interactive cards, mixed with the hero above */}
+      <section>
+        <div style={{ color: "var(--text-muted)", fontSize: 12, letterSpacing: "0.09em", textTransform: "uppercase", marginBottom: 14 }}>
+          Three steps to ready
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(250px, 1fr))", gap: 16 }}>
+          {STEPS.map((s) => (
+            <button
+              key={s.n}
+              className="lift press"
+              onClick={() => onNavigate(s.go)}
               style={{
-                width: 34,
-                height: 34,
-                borderRadius: 9,
-                background: "var(--accent-bg)",
-                color: "var(--accent)",
-                display: "grid",
-                placeItems: "center",
-                fontWeight: 700,
-                fontSize: 16,
+                ...panel,
+                textAlign: "left",
+                cursor: "pointer",
+                display: "flex",
+                flexDirection: "column",
+                gap: 10,
+                color: "var(--text)",
               }}
             >
-              {s.n}
-            </div>
-            <div style={{ fontSize: 17, fontWeight: 600 }}>{s.title}</div>
-            <p style={{ color: "var(--text-muted)", fontSize: 13.5, margin: 0, flex: 1 }}>
-              {s.body}
-            </p>
-            <button
-              onClick={() => onNavigate(s.go)}
-              style={{ ...btnGhost, alignSelf: "start" }}
-            >
-              {s.action}
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                <span
+                  style={{
+                    width: 32,
+                    height: 32,
+                    borderRadius: 9,
+                    background: "var(--accent-bg)",
+                    color: "var(--accent)",
+                    display: "grid",
+                    placeItems: "center",
+                    fontWeight: 700,
+                    fontSize: 15,
+                  }}
+                >
+                  {s.n}
+                </span>
+                <span aria-hidden style={{ fontSize: 20, opacity: 0.9 }}>
+                  {s.emoji}
+                </span>
+              </div>
+              <div style={{ fontSize: 18, fontWeight: 600 }}>{s.title}</div>
+              <p style={{ color: "var(--text-muted)", fontSize: 13.5, margin: 0, flex: 1, lineHeight: 1.5 }}>
+                {s.body}
+              </p>
+              <span className="link" style={{ fontSize: 13.5, fontWeight: 500 }}>
+                {s.action} →
+              </span>
             </button>
-          </div>
-        ))}
-      </div>
+          ))}
+        </div>
+      </section>
 
-      {/* How it works in 20 seconds */}
-      <section style={{ ...panel, background: "var(--bg-elevated)" }}>
-        <h3
-          style={{
-            margin: "0 0 12px",
-            fontSize: 12,
-            letterSpacing: "0.08em",
-            textTransform: "uppercase",
-            color: "var(--text-muted)",
-          }}
-        >
+      {/* How it works — borderless editorial strip (breaks the box rhythm) */}
+      <section>
+        <div style={{ color: "var(--text-muted)", fontSize: 12, letterSpacing: "0.09em", textTransform: "uppercase", marginBottom: 16 }}>
           How it works, in 20 seconds
-        </h3>
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
-            gap: 14,
-          }}
-        >
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))", gap: 20 }}>
           {HOW.map((h, i) => (
-            <div key={i} style={{ display: "flex", gap: 10, alignItems: "start" }}>
-              <span style={{ color: "var(--accent)", fontWeight: 700 }}>{i + 1}</span>
-              <span style={{ color: "var(--text-soft)", fontSize: 14 }}>{h}</span>
+            <div key={i} style={{ display: "flex", gap: 12, alignItems: "start" }}>
+              <span style={{ color: "var(--accent)", fontWeight: 700, fontSize: 20, lineHeight: 1 }}>
+                {i + 1}
+              </span>
+              <span style={{ color: "var(--text-soft)", fontSize: 14.5, lineHeight: 1.45 }}>{h}</span>
             </div>
           ))}
         </div>
       </section>
 
-      {/* Jump back in / empty state */}
+      {/* Sessions */}
       <section>
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center",
-            marginBottom: 12,
-          }}
-        >
-          <h3
-            style={{
-              margin: 0,
-              fontSize: 12,
-              letterSpacing: "0.08em",
-              textTransform: "uppercase",
-              color: "var(--text-muted)",
-            }}
-          >
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+          <div style={{ color: "var(--text-muted)", fontSize: 12, letterSpacing: "0.09em", textTransform: "uppercase" }}>
             {sessions.length ? "Jump back in" : "Your sessions"}
-          </h3>
-          <button onClick={() => onNavigate("sessions")} style={btn}>
+          </div>
+          <button className="press" onClick={() => onNavigate("sessions")} style={btn}>
             {sessions.length ? "All sessions" : "New session"}
           </button>
         </div>
         {sessions.length ? (
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))",
-              gap: 12,
-            }}
-          >
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(230px, 1fr))", gap: 12 }}>
             {sessions.slice(0, 6).map((s) => (
               <button
                 key={s.id}
+                className="lift"
                 onClick={() => onNavigate("sessions")}
-                style={{
-                  ...panel,
-                  textAlign: "left",
-                  cursor: "pointer",
-                  display: "grid",
-                  gap: 6,
-                }}
+                style={{ ...panel, textAlign: "left", cursor: "pointer", display: "grid", gap: 6, color: "var(--text)" }}
               >
-                <span style={{ fontSize: 15, color: "var(--text)" }}>{s.title}</span>
+                <span style={{ fontSize: 15 }}>{s.title}</span>
                 <span style={{ fontSize: 12, color: "var(--text-muted)" }}>{s.kind}</span>
               </button>
             ))}
           </div>
         ) : (
-          <div style={{ ...panel, color: "var(--text-muted)", fontSize: 14 }}>
+          <p style={{ color: "var(--text-muted)", fontSize: 14.5, margin: 0, lineHeight: 1.55, maxWidth: 620 }}>
             No sessions yet. A session is one call — its cards, its transcript, its coverage
-            report. Create one when you are ready to take a call.
-            <div style={{ marginTop: 6, color: "var(--text-dim)", fontSize: 13 }}>
-              {boot ? `${boot.cards} cards in your library.` : ""}
-            </div>
-          </div>
+            report. Create one when you are ready.
+            {boot ? (
+              <span style={{ color: "var(--text-dim)" }}> You have {boot.cards} cards in your library.</span>
+            ) : null}
+          </p>
         )}
       </section>
     </div>

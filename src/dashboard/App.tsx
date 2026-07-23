@@ -1,10 +1,11 @@
 //! Dashboard shell — the left icon rail + the active view. Owner vision
 //! (09_PLAN Phase 6): a small friendly desktop app; a student opens it and
-//! immediately understands what it is and where to click. Light everywhere
-//! except Settings; the debug surfaces hide behind a Settings toggle.
+//! immediately understands what it is and where to click. Warm, light,
+//! never a wall of monospace. Debug hides behind a Settings toggle.
 
-import { useState } from "react";
-import { NavIcon, pageBackdrop, type NavKey } from "./ui";
+import { useEffect, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { Mark, NavIcon, pageBackdrop, applyAppearance, type NavKey } from "./ui";
 import { General } from "./views/General";
 import { Sessions } from "./views/Sessions";
 import { Cards } from "./views/Cards";
@@ -21,38 +22,38 @@ const NAV: { key: NavKey; label: string }[] = [
 
 export function App() {
   const [view, setView] = useState<NavKey>("general");
+  const [version, setVersion] = useState("");
+
+  useEffect(() => {
+    invoke<{ accent: string; theme: string }>("get_appearance")
+      .then(applyAppearance)
+      .catch(() => {});
+    invoke<string>("app_version").then(setVersion).catch(() => {});
+  }, []);
 
   return (
-    <div style={{ display: "flex", minHeight: "100vh", color: "var(--text)" }}>
+    <div className="grain" style={{ display: "flex", minHeight: "100vh", color: "var(--text)" }}>
       {/* Left icon rail */}
       <nav
         style={{
           width: 84,
           flexShrink: 0,
           background: "var(--bg)",
-          borderRight: "1px solid var(--border)",
+          borderRight: "1px solid var(--border-soft)",
           display: "flex",
           flexDirection: "column",
           alignItems: "center",
           paddingTop: 16,
-          gap: 6,
+          gap: 4,
           position: "sticky",
           top: 0,
           height: "100vh",
+          zIndex: 1,
         }}
       >
-        <div
-          aria-hidden
-          style={{
-            width: 30,
-            height: 30,
-            borderRadius: 8,
-            background: "var(--accent)",
-            marginBottom: 14,
-            maskImage: "radial-gradient(circle at 50% 62%, transparent 22%, black 23%)",
-            WebkitMaskImage: "radial-gradient(circle at 50% 62%, transparent 22%, black 23%)",
-          }}
-        />
+        <div style={{ marginBottom: 14 }}>
+          <Mark size={32} />
+        </div>
         {NAV.map((n) => {
           const active = view === n.key;
           return (
@@ -63,7 +64,7 @@ export function App() {
               style={{
                 width: 68,
                 padding: "10px 0 8px",
-                borderRadius: 10,
+                borderRadius: 12,
                 border: "none",
                 cursor: "pointer",
                 display: "flex",
@@ -83,12 +84,41 @@ export function App() {
       </nav>
 
       {/* Content */}
-      <main style={{ flex: 1, ...pageBackdrop, padding: "32px 36px", overflowY: "auto", height: "100vh" }}>
-        {view === "general" && <General onNavigate={setView} />}
-        {view === "sessions" && <Sessions />}
-        {view === "cards" && <Cards />}
-        {view === "settings" && <Settings />}
-        {view === "about" && <About />}
+      <main
+        style={{
+          flex: 1,
+          ...pageBackdrop,
+          padding: "34px 40px 60px",
+          overflowY: "auto",
+          height: "100vh",
+          position: "relative",
+          zIndex: 1,
+        }}
+      >
+        <div className="rise-in" key={view}>
+          {view === "general" && <General onNavigate={setView} />}
+          {view === "sessions" && <Sessions />}
+          {view === "cards" && <Cards />}
+          {view === "settings" && <Settings />}
+          {view === "about" && <About />}
+        </div>
+
+        {/* Version badge, bottom-right (Handy-style). Update pill wires later. */}
+        {version && (
+          <div
+            style={{
+              position: "fixed",
+              right: 16,
+              bottom: 12,
+              fontSize: 11,
+              color: "var(--text-dim)",
+              userSelect: "none",
+            }}
+            title="Anchor version"
+          >
+            v{version}
+          </div>
+        )}
       </main>
     </div>
   );

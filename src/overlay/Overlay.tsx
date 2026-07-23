@@ -106,6 +106,30 @@ export function Overlay() {
   const activeKey = assembled ? `asm-${assembledKey}` : (row?.id ?? "empty");
   useInteractiveZone(cardRef, activeKey);
 
+  // Accent + card transparency come from the shared appearance settings and
+  // are pushed live from Settings (appearance:changed). The overlay stays dark
+  // regardless of the dashboard's light/dark theme (glance-legibility).
+  useEffect(() => {
+    const apply = (a: { accent?: string; overlay_opacity?: number }) => {
+      const el = document.documentElement;
+      if (a.accent) el.setAttribute("data-accent", a.accent);
+      if (typeof a.overlay_opacity === "number") {
+        const alpha = Math.max(0.4, Math.min(1, a.overlay_opacity / 100));
+        el.style.setProperty("--card-alpha", String(alpha));
+      }
+    };
+    invoke<{ accent: string; overlay_opacity: number }>("get_appearance")
+      .then(apply)
+      .catch(() => {});
+    const un = listen<{ accent: string; overlay_opacity: number }>(
+      "appearance:changed",
+      (e) => apply(e.payload),
+    );
+    return () => {
+      un.then((f) => f()).catch(() => {});
+    };
+  }, []);
+
   useEffect(() => {
     const unShow = listen<CardRow>("card:show", (e) => {
       rowIdRef.current = e.payload.id;

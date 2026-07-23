@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { Mode2Settings } from "./Mode2Settings";
 
 interface Thresholds {
   theta_card: number;
@@ -233,8 +232,6 @@ export function LivePanel({ developer = true }: { developer?: boolean }) {
           </div>
         )}
       </section>
-
-      <Mode2Settings />
 
       {developer && (
       <>
