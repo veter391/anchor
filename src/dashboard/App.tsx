@@ -11,6 +11,7 @@ import { Sessions } from "./views/Sessions";
 import { Cards } from "./views/Cards";
 import { Settings } from "./views/Settings";
 import { About } from "./views/About";
+import { ConsentModal } from "./ConsentModal";
 
 const NAV: { key: NavKey; label: string }[] = [
   { key: "general", label: "General" },
@@ -23,16 +24,29 @@ const NAV: { key: NavKey; label: string }[] = [
 export function App() {
   const [view, setView] = useState<NavKey>("general");
   const [version, setVersion] = useState("");
+  // null = still loading; false = show the first-run consent screen.
+  const [consent, setConsent] = useState<boolean | null>(null);
 
   useEffect(() => {
     invoke<{ accent: string; theme: string }>("get_appearance")
       .then(applyAppearance)
       .catch(() => {});
     invoke<string>("app_version").then(setVersion).catch(() => {});
+    invoke<boolean>("get_consent")
+      .then(setConsent)
+      .catch(() => setConsent(true)); // fail-open: never lock the user out
   }, []);
 
   return (
     <div className="grain" style={{ display: "flex", minHeight: "100vh", color: "var(--text)" }}>
+      {consent === false && (
+        <ConsentModal
+          onAccept={() => {
+            invoke("accept_consent").catch(() => {});
+            setConsent(true);
+          }}
+        />
+      )}
       {/* Left icon rail */}
       <nav
         style={{

@@ -650,6 +650,20 @@ fn app_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
 }
 
+/// Whether the one-time first-run consent screen has been accepted.
+#[tauri::command]
+fn get_consent(db: tauri::State<'_, Db>) -> Result<bool, String> {
+    let conn = db.conn.lock().map_err(|e| e.to_string())?;
+    Ok(setting_get(&conn, "consent_accepted").as_deref() == Some("1"))
+}
+
+/// Record acceptance of the first-run consent + model-download terms (08 §5).
+#[tauri::command]
+fn accept_consent(db: tauri::State<'_, Db>) -> Result<(), String> {
+    let conn = db.conn.lock().map_err(|e| e.to_string())?;
+    setting_set(&conn, "consent_accepted", "1")
+}
+
 /// Whether the overlay is currently hidden from screen capture (default OFF —
 /// no stealth by design; this is a presentation convenience, 00_PRODUCT).
 #[tauri::command]
@@ -817,6 +831,8 @@ pub fn run() {
             get_appearance,
             set_appearance,
             app_version,
+            get_consent,
+            accept_consent,
             get_capture_excluded,
             set_capture_excluded,
             set_api_key
