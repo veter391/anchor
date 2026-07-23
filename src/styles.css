@@ -21,11 +21,11 @@
   --text-dim: #6b7684;
   --text-muted: #8a94a3;
 
-  /* Accent — CORAL by default (warm). */
-  --accent: #ff6f5e;
-  --accent-strong: #ff8a76; /* hover / brighter */
-  --accent-bg: rgba(255, 111, 94, 0.13);
-  --accent-glow: rgba(255, 111, 94, 0.14);
+  /* Accent — soft coral-rose by default (warm, gentle, not alarm-red). */
+  --accent: #f0868f;
+  --accent-strong: #f7a2a8; /* hover / brighter */
+  --accent-bg: rgba(240, 134, 143, 0.12);
+  --accent-glow: rgba(240, 134, 143, 0.12);
 
   /* Provenance + states (stable across accents) */
   --assembled: #c99a4e;

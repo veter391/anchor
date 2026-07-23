@@ -547,9 +547,10 @@ fn read_appearance(conn: &Connection) -> Appearance {
     Appearance {
         accent: setting_get(conn, "ui_accent").unwrap_or_else(|| "coral".into()),
         theme: setting_get(conn, "ui_theme").unwrap_or_else(|| "dark".into()),
+        // Default 90 = a whisper of transparency (owner), still very readable.
         overlay_opacity: setting_get(conn, "overlay_opacity")
             .and_then(|v| v.parse().ok())
-            .unwrap_or(100),
+            .unwrap_or(90),
     }
 }
 

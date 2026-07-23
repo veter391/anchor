@@ -30,7 +30,7 @@ const ACCENTS = [
 export function Settings() {
   const [dev, setDev] = useState(false);
   const [boot, setBoot] = useState<BootInfo | null>(null);
-  const [look, setLook] = useState<Appearance>({ accent: "coral", theme: "dark", overlay_opacity: 100 });
+  const [look, setLook] = useState<Appearance>({ accent: "coral", theme: "dark", overlay_opacity: 90 });
 
   useEffect(() => {
     invoke<BootInfo>("boot_info").then(setBoot).catch(() => {});
