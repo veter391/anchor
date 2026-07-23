@@ -12,6 +12,7 @@ pub mod mode2;
 pub mod overlay_input;
 pub mod search;
 pub mod store;
+pub mod textfmt;
 
 use embed::Embedder;
 use rusqlite::Connection;
@@ -436,6 +437,19 @@ fn restyle_card(app: tauri::AppHandle) -> Result<(), String> {
     live::restyle_current_card(&app)
 }
 
+/// Self-healing corpus cleanup: repairs prepared cards whose canonical bullets
+/// drifted into prose (older ingested cards, pre-tightener) to the tight
+/// Recommended keyword style, re-embedding as it goes. Idempotent; returns the
+/// number of cards fixed. Called once on dashboard load.
+#[tauri::command]
+fn retighten_corpus(
+    db: tauri::State<'_, Db>,
+    embedder: tauri::State<'_, Arc<Embedder>>,
+) -> Result<usize, String> {
+    let mut conn = db.conn.lock().map_err(|e| e.to_string())?;
+    store::retighten_corpus(&mut conn, &embedder)
+}
+
 #[tauri::command]
 fn set_api_key(provider: String, key: String) -> Result<(), String> {
     if key.trim().is_empty() {
@@ -515,6 +529,7 @@ pub fn run() {
             generate_cards,
             adapt_corpus,
             restyle_card,
+            retighten_corpus,
             set_api_key
         ])
         .setup(move |app| {

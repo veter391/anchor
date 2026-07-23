@@ -45,3 +45,6 @@ Desktop.ini
 .idea/
 .vscode/
 *.swp
+
+# Verification screenshots (internal)
+/verify/

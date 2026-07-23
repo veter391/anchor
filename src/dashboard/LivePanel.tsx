@@ -127,6 +127,7 @@ export function LivePanel() {
 
   const play = async () => {
     setPlaying(true);
+    setMode2(null); // clear any stale assembly status from a previous run
     stopRef.current = false;
     await invoke("reset_live").catch(() => {});
     const lines = script
@@ -270,7 +271,13 @@ export function LivePanel() {
               ■ Stop
             </button>
           )}
-          <button onClick={() => invoke("reset_live").catch(() => {})} style={btn}>
+          <button
+            onClick={() => {
+              setMode2(null);
+              invoke("reset_live").catch(() => {});
+            }}
+            style={btn}
+          >
             Reset session
           </button>
           {progress && (

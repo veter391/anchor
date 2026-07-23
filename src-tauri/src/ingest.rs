@@ -8,21 +8,29 @@
 
 use crate::mode2::provider::style_rule;
 use crate::mode2::{self, ProviderChoice};
+use crate::textfmt::{derive_short, tighten_default};
 use serde::Deserialize;
 
-fn system_prompt(style: &str) -> String {
+/// Canonical bullets are ALWAYS generated in the Recommended (default) style —
+/// it is the storage baseline; the short/long variants derive from it and the
+/// display setting only chooses which to show. So ingestion ignores the
+/// current display style for generation and uses the default keyword rule.
+fn system_prompt() -> String {
     format!(
         "You turn a person's own study material into cue cards for speaking under pressure.\n\
          A card = one question-style title (phrased the way a person would ASK it in a call) \
          plus 3-6 anchor bullets. The title must accurately describe what its bullets say — \
          never attach one thing's title to another thing's facts.\n\
          {style}\n\
+         Bullets are keyword fragments, NOT sentences: no articles, no 'is/are', drop filler. \
+         Good: \"40 services, zero downtime\", \"Helm + ArgoCD, GitOps\". \
+         Bad: \"We moved forty services with zero downtime\".\n\
          Use ONLY facts present in the material — never invent names, numbers or claims. \
          Skip filler; if a passage holds nothing worth anchoring, produce fewer cards.\n\
          Keep the material's own language for titles and bullets.\n\
          Return ONLY a JSON object: {{\"cards\": [{{\"title\": \"...\", \"points\": [\"...\"]}}]}} \
          with 1-3 cards.",
-        style = style_rule(style)
+        style = style_rule("default")
     )
 }
 
@@ -87,8 +95,9 @@ pub async fn generate_drafts(
     if chunks.is_empty() {
         return Err("no material to work with — the text is empty".into());
     }
+    let _ = style; // canonical is always default-style; display setting is orthogonal
     let total = chunks.len();
-    let sys = system_prompt(style);
+    let sys = system_prompt();
 
     let mut markdown = String::new();
     let mut cards = 0usize;
@@ -101,12 +110,14 @@ pub async fn generate_drafts(
                 Some(parsed) if !parsed.cards.is_empty() => {
                     for c in parsed.cards {
                         let title = c.title.trim();
-                        // Small models occasionally repeat a bullet — dedup.
+                        // Small models repeat bullets and write prose. Tighten
+                        // each to the Recommended keyword style, then dedup on
+                        // the tightened form so near-duplicates collapse too.
                         let mut seen = std::collections::HashSet::new();
-                        let points: Vec<&str> = c
+                        let points: Vec<String> = c
                             .points
                             .iter()
-                            .map(|p| p.trim().trim_start_matches("- "))
+                            .map(|p| tighten_default(p.trim().trim_start_matches("- ")))
                             .filter(|p| !p.is_empty() && seen.insert(p.to_lowercase()))
                             .take(crate::cards::MAX_BULLETS)
                             .collect();
@@ -176,28 +187,6 @@ fn variant_system() -> String {
      Return ONLY a JSON object: {\"bullets\": [{\"short\": \"...\", \"long\": \"...\"}]} \
      with EXACTLY one entry per input bullet, in the same order."
         .to_string()
-}
-
-const STOPWORDS: &[&str] = &[
-    "the", "a", "an", "of", "and", "or", "to", "in", "on", "for", "with", "is", "are", "was",
-    "were", "be", "by", "at", "as", "it", "that", "this",
-];
-
-/// Deterministic 1-2-word anchor from the canonical bullet — the fallback
-/// when the model's "short" breaks the contract. Prefers significant words.
-fn derive_short(base: &str) -> String {
-    let words: Vec<&str> = base
-        .split(|c: char| !(c.is_alphanumeric() || c == '-' || c == '+' || c == '%'))
-        .filter(|w| {
-            w.chars().any(char::is_alphanumeric) && !STOPWORDS.contains(&w.to_lowercase().as_str())
-        })
-        .take(2)
-        .collect();
-    if words.is_empty() {
-        base.split_whitespace().take(2).collect::<Vec<_>>().join(" ")
-    } else {
-        words.join(" ")
-    }
 }
 
 /// Enforce the variant contracts in code — small models drift (observed

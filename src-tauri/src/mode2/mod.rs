@@ -366,6 +366,13 @@ pub async fn assemble(
         return Ok(clarify_card(&raw.title));
     }
 
+    // Enforce the active display style on the live card (assembled cards are
+    // not stored, so they have no variant columns): small models write prose
+    // even when told the style — tighten deterministically, like ingestion.
+    for t in &mut texts {
+        *t = crate::textfmt::enforce_style(t, style);
+    }
+
     let mut card = ground_check(embedder, material, &texts, &raw.title)?;
     // The model's own [K] flag is authoritative for "the model knew it was
     // reaching beyond the notes"; OR it with the embedding verdict.

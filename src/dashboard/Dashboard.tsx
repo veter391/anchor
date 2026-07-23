@@ -96,6 +96,13 @@ export function Dashboard() {
     invoke<{ bullet_style: string }>("get_llm_config")
       .then((c) => setStyle(c.bullet_style))
       .catch(() => {});
+    // Self-heal any pre-tightener prose bullets to the Recommended keyword
+    // style (idempotent; no-op once the corpus is clean).
+    invoke<number>("retighten_corpus")
+      .then((n) => {
+        if (n > 0) refresh();
+      })
+      .catch(() => {});
     const unGen = listen<{ done: number; total: number }>("ingest:progress", (e) =>
       setGenProgress(`part ${e.payload.done}/${e.payload.total}`),
     );
