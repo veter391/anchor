@@ -21,11 +21,11 @@
   --text-dim: #6b7684;
   --text-muted: #8a94a3;
 
-  /* Accent — soft coral-rose by default (warm, gentle, not alarm-red). */
-  --accent: #f0868f;
-  --accent-strong: #f7a2a8; /* hover / brighter */
-  --accent-bg: rgba(240, 134, 143, 0.12);
-  --accent-glow: rgba(240, 134, 143, 0.12);
+  /* Accent — TEAL by default (owner: keep the calm teal as the main colour). */
+  --accent: #4fd1c5;
+  --accent-strong: #6fe0d6;
+  --accent-bg: rgba(79, 209, 197, 0.12);
+  --accent-glow: rgba(79, 209, 197, 0.12);
 
   /* Provenance + states (stable across accents) */
   --assembled: #c99a4e;
@@ -46,12 +46,13 @@
   --shadow-soft: 0 1px 0 rgba(255, 255, 255, 0.02), 0 8px 30px rgba(0, 0, 0, 0.35);
 }
 
-/* ── Accents ─────────────────────────────────────────────────────── */
-:root[data-accent="teal"] {
-  --accent: #4fd1c5;
-  --accent-strong: #6fe0d6;
-  --accent-bg: rgba(79, 209, 197, 0.12);
-  --accent-glow: rgba(79, 209, 197, 0.12);
+/* ── Accents (overrides; teal is the base default above) ─────────── */
+:root[data-accent="coral"] {
+  /* Soft coral-rose — coral with a touch more pink, gentle (owner tuned). */
+  --accent: #ee889a;
+  --accent-strong: #f5a3b0;
+  --accent-bg: rgba(238, 136, 154, 0.12);
+  --accent-glow: rgba(238, 136, 154, 0.12);
 }
 :root[data-accent="amber"] {
   --accent: #eab04a;

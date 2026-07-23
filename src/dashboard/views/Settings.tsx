@@ -22,15 +22,15 @@ interface Appearance {
 }
 
 const ACCENTS = [
-  { key: "coral", label: "Coral", swatch: "#ff6f5e" },
   { key: "teal", label: "Teal", swatch: "#4fd1c5" },
+  { key: "coral", label: "Coral", swatch: "#ee889a" },
   { key: "amber", label: "Amber", swatch: "#eab04a" },
 ];
 
 export function Settings() {
   const [dev, setDev] = useState(false);
   const [boot, setBoot] = useState<BootInfo | null>(null);
-  const [look, setLook] = useState<Appearance>({ accent: "coral", theme: "dark", overlay_opacity: 90 });
+  const [look, setLook] = useState<Appearance>({ accent: "teal", theme: "dark", overlay_opacity: 90 });
 
   useEffect(() => {
     invoke<BootInfo>("boot_info").then(setBoot).catch(() => {});

@@ -47,9 +47,12 @@ impl Embedder {
         let mut guard = self.model.lock().map_err(|e| e.to_string())?;
         if guard.is_none() {
             let started = std::time::Instant::now();
-            let model = TextEmbedding::try_new(TextInitOptions::new(
-                EmbeddingModel::EmbeddingGemma300MQ,
-            ))
+            // Cache the model inside the portable data folder so everything
+            // Anchor stores is in one place (owner decision 2026-07-23).
+            let model = TextEmbedding::try_new(
+                TextInitOptions::new(EmbeddingModel::EmbeddingGemma300MQ)
+                    .with_cache_dir(crate::paths::cache_dir()),
+            )
             .map_err(|e| format!("embedding model init failed: {e}"))?;
             tracing::info!(
                 elapsed_s = started.elapsed().as_secs_f64(),

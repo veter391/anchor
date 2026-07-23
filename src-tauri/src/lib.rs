@@ -10,6 +10,7 @@ pub mod live;
 pub mod matcher;
 pub mod mode2;
 pub mod overlay_input;
+pub mod paths;
 pub mod search;
 pub mod store;
 pub mod textfmt;
@@ -195,8 +196,8 @@ struct ModelRow {
 }
 
 #[tauri::command]
-fn list_models(app: tauri::AppHandle) -> Result<Vec<ModelRow>, String> {
-    let app_data = app.path().app_data_dir().map_err(|e| e.to_string())?;
+fn list_models() -> Result<Vec<ModelRow>, String> {
+    let app_data = paths::data_dir();
     Ok(mode2::models::REGISTRY
         .iter()
         .map(|m| ModelRow {
@@ -221,7 +222,7 @@ struct DownloadProgress {
 #[tauri::command]
 async fn download_model(app: tauri::AppHandle, id: String) -> Result<(), String> {
     let info = mode2::models::find(&id).ok_or("unknown model id")?;
-    let app_data = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let app_data = paths::data_dir();
     let app2 = app.clone();
     let id2 = id.clone();
     mode2::models::download(&app_data, info, move |downloaded, total| {
@@ -246,7 +247,7 @@ fn delete_model(app: tauri::AppHandle, id: String) -> Result<(), String> {
     // Registry-validate the id — never join raw frontend input into a path
     // (audit 2026-07-23: "../x" would escape the models dir).
     let info = mode2::models::find(&id).ok_or("unknown model id")?;
-    let app_data = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let app_data = paths::data_dir();
     // If this model is the one loaded in RAM, drop it: keeping it would both
     // hold ~1-2 GB and let `ensure` serve a model whose file is gone.
     app.state::<Arc<mode2::local::LocalEngine>>().unload_if(info.id);
@@ -545,7 +546,7 @@ struct Appearance {
 
 fn read_appearance(conn: &Connection) -> Appearance {
     Appearance {
-        accent: setting_get(conn, "ui_accent").unwrap_or_else(|| "coral".into()),
+        accent: setting_get(conn, "ui_accent").unwrap_or_else(|| "teal".into()),
         theme: setting_get(conn, "ui_theme").unwrap_or_else(|| "dark".into()),
         // Default 90 = a whisper of transparency (owner), still very readable.
         overlay_opacity: setting_get(conn, "overlay_opacity")
@@ -700,8 +701,16 @@ pub fn run() {
             set_api_key
         ])
         .setup(move |app| {
-            let data_dir = app.path().app_data_dir()?;
-            std::fs::create_dir_all(&data_dir)?;
+            // Portable: everything in one folder next to the app. Migrate any
+            // existing DB/models/cache out of the old per-user AppData location
+            // so upgrading users keep their data.
+            let old_app_data = app.path().app_data_dir().ok();
+            let cwd = std::env::current_dir().unwrap_or_default();
+            paths::migrate_if_needed(
+                old_app_data.as_deref(),
+                &[cwd.join(".fastembed_cache"), cwd.join("src-tauri/.fastembed_cache")],
+            );
+            let data_dir = paths::data_dir();
             let db_path = data_dir.join("anchor.db");
             let conn = db::open_and_migrate(&db_path)?;
             let (_, dims) =

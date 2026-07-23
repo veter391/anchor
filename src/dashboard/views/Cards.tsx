@@ -39,7 +39,6 @@ export function Cards() {
   const [info, setInfo] = useState<string | null>(null);
   const [progress, setProgress] = useState<string | null>(null);
   const [style, setStyle] = useState("default");
-  const [more, setMore] = useState(false);
   const [review, setReview] = useState(false);
   const [expanded, setExpanded] = useState<string | null>(null);
 
@@ -175,13 +174,15 @@ export function Cards() {
             lineHeight: 1.5,
           }}
         />
+        {/* Primary action + a calm, always-there options row (no toggle). */}
         <div
           style={{
             display: "flex",
             alignItems: "center",
-            gap: 10,
-            padding: "8px 10px",
+            gap: 12,
+            padding: "10px 12px",
             borderTop: "1px solid var(--border-soft)",
+            flexWrap: "wrap",
           }}
         >
           <button
@@ -192,56 +193,87 @@ export function Cards() {
           >
             {review ? "Draft cards" : "Add to library"}
           </button>
-          <span style={{ fontSize: 12.5, color: busy ? "var(--accent)" : "var(--text-muted)" }}>
-            {busy || progress || (text.trim() && looksLikeReadyCards(text) ? "looks like ready cards" : "")}
-          </span>
-          <button
-            className="link"
-            onClick={() => setMore((m) => !m)}
-            style={{ marginLeft: "auto", background: "none", border: "none", fontSize: 12.5 }}
-          >
-            {more ? "Fewer options" : "More options"}
-          </button>
-        </div>
 
-        {more && (
+          {/* Options — quiet pills, aligned right, small and unobtrusive */}
           <div
             style={{
+              marginLeft: "auto",
               display: "flex",
               alignItems: "center",
-              gap: 16,
-              flexWrap: "wrap",
-              padding: "10px 14px",
-              borderTop: "1px solid var(--border-soft)",
+              gap: 6,
               fontSize: 12.5,
               color: "var(--text-muted)",
             }}
           >
-            <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
-              <input type="checkbox" checked={review} onChange={(e) => setReview(e.target.checked)} />
-              Review drafts before adding
-            </label>
-            <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
-              Bullet length
+            <button
+              onClick={() => setReview((r) => !r)}
+              title="Look over the drafts before they go into your library"
+              className="press"
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                padding: "6px 10px",
+                borderRadius: 8,
+                cursor: "pointer",
+                background: review ? "var(--accent-bg)" : "transparent",
+                border: `1px solid ${review ? "var(--accent)" : "var(--border)"}`,
+                color: review ? "var(--accent)" : "var(--text-muted)",
+              }}
+            >
+              {review ? "✓ Review first" : "Review first"}
+            </button>
+
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 6,
+                padding: "4px 6px 4px 10px",
+                borderRadius: 8,
+                border: "1px solid var(--border)",
+              }}
+            >
+              <span>Length</span>
               <select
                 value={style}
                 onChange={(e) => changeStyle(e.target.value)}
                 style={{
-                  background: "var(--bg-elevated)",
+                  background: "transparent",
                   color: "var(--text)",
-                  border: "1px solid var(--border)",
-                  borderRadius: 6,
-                  padding: "4px 7px",
+                  border: "none",
+                  outline: "none",
+                  cursor: "pointer",
+                  fontSize: 12.5,
                 }}
               >
                 <option value="default">Recommended</option>
                 <option value="short">Short</option>
                 <option value="long">Longer</option>
               </select>
-            </label>
-            <button className="link" onClick={importFolder} style={{ background: "none", border: "none", fontSize: 12.5 }}>
-              Import a folder of .md files
+            </div>
+
+            <button
+              onClick={importFolder}
+              className="press"
+              title="Import a folder of .md card files"
+              style={{
+                padding: "6px 10px",
+                borderRadius: 8,
+                cursor: "pointer",
+                background: "transparent",
+                border: "1px solid var(--border)",
+                color: "var(--text-muted)",
+              }}
+            >
+              Import folder
             </button>
+          </div>
+        </div>
+
+        {(busy || progress) && (
+          <div style={{ padding: "0 14px 10px", fontSize: 12.5, color: "var(--accent)" }}>
+            {busy || progress}
           </div>
         )}
       </section>
