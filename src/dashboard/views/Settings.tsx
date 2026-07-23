@@ -31,11 +31,18 @@ export function Settings() {
   const [dev, setDev] = useState(false);
   const [boot, setBoot] = useState<BootInfo | null>(null);
   const [look, setLook] = useState<Appearance>({ accent: "teal", theme: "dark", overlay_opacity: 90 });
+  const [captureExcluded, setCaptureExcluded] = useState(false);
 
   useEffect(() => {
     invoke<BootInfo>("boot_info").then(setBoot).catch(() => {});
     invoke<Appearance>("get_appearance").then(setLook).catch(() => {});
+    invoke<boolean>("get_capture_excluded").then(setCaptureExcluded).catch(() => {});
   }, []);
+
+  const toggleCapture = (on: boolean) => {
+    setCaptureExcluded(on);
+    invoke("set_capture_excluded", { on }).catch(() => {});
+  };
 
   const save = (patch: Partial<Appearance>) => {
     const next = { ...look, ...patch };
@@ -164,6 +171,27 @@ export function Settings() {
             </div>
           )}
         </div>
+      </section>
+
+      {/* Screen sharing */}
+      <section style={panel}>
+        <SectionTitle emoji="🖥️">Screen sharing</SectionTitle>
+        <label style={{ display: "flex", alignItems: "flex-start", gap: 10, cursor: "pointer" }}>
+          <input
+            type="checkbox"
+            checked={captureExcluded}
+            onChange={(e) => toggleCapture(e.target.checked)}
+            style={{ marginTop: 3 }}
+          />
+          <span>
+            <span style={{ fontSize: 14 }}>Hide my notes when I share my screen</span>
+            <span style={{ display: "block", fontSize: 12.5, color: "var(--text-muted)", lineHeight: 1.5 }}>
+              Off by default — Anchor has no stealth mode. When on, the floating card is kept out
+              of a Teams/Zoom/OBS share (and out of your own recordings). During a live call you can
+              reveal it any time with “Show notes”.
+            </span>
+          </span>
+        </label>
       </section>
 
       {/* Developer */}

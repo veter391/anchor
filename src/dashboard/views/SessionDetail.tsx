@@ -59,6 +59,7 @@ export function SessionDetail({ session, onBack }: { session: SessionRow; onBack
   const [live, setLive] = useState(false);
   const [status, setStatus] = useState(session.status);
   const [report, setReport] = useState<Report | null>(null);
+  const [shareHidden, setShareHidden] = useState(false);
 
   const closed = status === "closed_green" || status === "closed_red";
 
@@ -74,6 +75,7 @@ export function SessionDetail({ session, onBack }: { session: SessionRow; onBack
     invoke<string>("get_active_session")
       .then((id) => setLive(id === session.id))
       .catch(() => {});
+    invoke<boolean>("get_capture_excluded").then(setShareHidden).catch(() => {});
     if (session.status === "closed_green" || session.status === "closed_red") {
       invoke<Report>("session_report", { sessionId: session.id })
         .then(setReport)
@@ -121,6 +123,11 @@ export function SessionDetail({ session, onBack }: { session: SessionRow; onBack
     } catch (e) {
       setErr(String(e));
     }
+  };
+  const toggleShare = async () => {
+    const next = !shareHidden;
+    setShareHidden(next);
+    await invoke("set_capture_excluded", { on: next }).catch((e) => setErr(String(e)));
   };
 
   const addMaterial = async () => {
@@ -196,6 +203,18 @@ export function SessionDetail({ session, onBack }: { session: SessionRow; onBack
                   </span>
                   <button className="press" onClick={endCall} style={btn}>
                     End call
+                  </button>
+                  <button
+                    className="press"
+                    onClick={toggleShare}
+                    style={btnGhost}
+                    title={
+                      shareHidden
+                        ? "Reveal the card in your screen share"
+                        : "Keep the card out of your screen share"
+                    }
+                  >
+                    {shareHidden ? "Show notes" : "Hide from share"}
                   </button>
                   <button className="press" onClick={cancelLive} style={btnGhost}>
                     Cancel

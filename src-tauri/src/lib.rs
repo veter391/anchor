@@ -629,6 +629,33 @@ fn app_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
 }
 
+/// Whether the overlay is currently hidden from screen capture (default OFF —
+/// no stealth by design; this is a presentation convenience, 00_PRODUCT).
+#[tauri::command]
+fn get_capture_excluded(db: tauri::State<'_, Db>) -> Result<bool, String> {
+    let conn = db.conn.lock().map_err(|e| e.to_string())?;
+    Ok(setting_get(&conn, "capture_excluded").as_deref() == Some("1"))
+}
+
+/// Hide (or reveal) the overlay from screen sharing via the OS capture-exclusion
+/// affinity. `on = true` hides it from a Teams/Zoom/OBS share AND from the
+/// user's own recordings — the "Show notes" button flips it back to false.
+#[tauri::command]
+fn set_capture_excluded(
+    app: tauri::AppHandle,
+    db: tauri::State<'_, Db>,
+    on: bool,
+) -> Result<(), String> {
+    {
+        let conn = db.conn.lock().map_err(|e| e.to_string())?;
+        setting_set(&conn, "capture_excluded", if on { "1" } else { "0" })?;
+    }
+    if let Some(w) = app.get_webview_window("overlay") {
+        w.set_content_protected(on).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 /// Self-healing corpus cleanup: repairs prepared cards whose canonical bullets
 /// drifted into prose (older ingested cards, pre-tightener) to the tight
 /// Recommended keyword style, re-embedding as it goes. Idempotent; returns the
@@ -767,6 +794,8 @@ pub fn run() {
             get_appearance,
             set_appearance,
             app_version,
+            get_capture_excluded,
+            set_capture_excluded,
             set_api_key
         ])
         .setup(move |app| {
@@ -790,6 +819,7 @@ pub fn run() {
             db::check_embedding_compat(&conn, embed::MODEL_ID, embed::DIMS as i64)
                 .map_err(std::io::Error::other)?;
             live::ensure_scratch_session(&conn)?;
+            let capture_excluded = setting_get(&conn, "capture_excluded").as_deref() == Some("1");
             tracing::info!(path = %db_path.display(), dims, "database ready");
             app.manage(Db {
                 conn: Mutex::new(conn),
@@ -808,6 +838,10 @@ pub fn run() {
             let overlay = app
                 .get_webview_window("overlay")
                 .expect("overlay window declared in tauri.conf.json");
+            // Re-apply the saved screen-share preference (default OFF — no stealth).
+            if capture_excluded {
+                let _ = overlay.set_content_protected(true);
+            }
             overlay_input::spawn_poll_loop(overlay);
             Ok(())
         })
