@@ -65,7 +65,7 @@ interface PartialEvent {
   final_: boolean;
 }
 
-export function LivePanel() {
+export function LivePanel({ developer = true }: { developer?: boolean }) {
   const [script, setScript] = useState(SAMPLE);
   const [playing, setPlaying] = useState(false);
   const [progress, setProgress] = useState<string | null>(null);
@@ -236,6 +236,8 @@ export function LivePanel() {
 
       <Mode2Settings />
 
+      {developer && (
+      <>
       <section style={panel}>
         <h3 style={{ margin: "0 0 8px", fontSize: 13, color: "var(--text-muted)" }}>
           TRANSCRIPT PLAYER — Phase 3 (them: / me: lines, played at speaking pace)
@@ -399,6 +401,8 @@ export function LivePanel() {
           </div>
         )}
       </section>
+      </>
+      )}
     </>
   );
 }

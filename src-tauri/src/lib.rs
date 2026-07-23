@@ -15,7 +15,7 @@ pub mod store;
 pub mod textfmt;
 
 use embed::Embedder;
-use rusqlite::Connection;
+use rusqlite::{params, Connection};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Manager};
@@ -334,6 +334,102 @@ fn set_llm_config(
     Ok(())
 }
 
+// ── Sessions (Phase 6) ──────────────────────────────────────────────
+// A session is one call: its own cards, transcript, coverage. The scratch
+// session (Phase 3 dev harness) is hidden from this surface.
+
+#[derive(serde::Serialize)]
+struct SessionRow {
+    id: String,
+    title: String,
+    kind: String,
+    status: String,
+    language: String,
+    created_at: i64,
+    card_count: i64,
+}
+
+#[tauri::command]
+fn list_sessions(db: tauri::State<'_, Db>) -> Result<Vec<SessionRow>, String> {
+    let conn = db.conn.lock().map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT s.id, s.title, s.kind, s.status, s.language, s.created_at,
+                    (SELECT COUNT(*) FROM cards c WHERE c.session_id = s.id)
+             FROM sessions s
+             WHERE s.id <> ?1
+             ORDER BY s.created_at DESC",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![live::SCRATCH_SESSION], |r| {
+            Ok(SessionRow {
+                id: r.get(0)?,
+                title: r.get(1)?,
+                kind: r.get(2)?,
+                status: r.get(3)?,
+                language: r.get(4)?,
+                created_at: r.get(5)?,
+                card_count: r.get(6)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn create_session(
+    db: tauri::State<'_, Db>,
+    title: String,
+    kind: String,
+    language: Option<String>,
+) -> Result<String, String> {
+    let title = title.trim();
+    if title.is_empty() {
+        return Err("a session needs a name".into());
+    }
+    let kind = match kind.as_str() {
+        "interview" | "client" | "team" | "investor" | "other" => kind,
+        _ => "other".into(),
+    };
+    let id = uuid::Uuid::new_v4().to_string();
+    let conn = db.conn.lock().map_err(|e| e.to_string())?;
+    conn.execute(
+        "INSERT INTO sessions (id, title, kind, status, language, created_at)
+         VALUES (?1, ?2, ?3, 'planned', ?4, strftime('%s','now'))",
+        params![id, title, kind, language.unwrap_or_else(|| "en".into())],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(id)
+}
+
+#[tauri::command]
+fn set_session_status(db: tauri::State<'_, Db>, id: String, status: String) -> Result<(), String> {
+    let status = match status.as_str() {
+        "planned" | "live" | "closed_green" | "closed_red" | "archived" => status,
+        _ => return Err("unknown session status".into()),
+    };
+    let conn = db.conn.lock().map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE sessions SET status = ?2 WHERE id = ?1",
+        params![id, status],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn delete_session(db: tauri::State<'_, Db>, id: String) -> Result<(), String> {
+    if id == live::SCRATCH_SESSION {
+        return Err("the scratch session cannot be deleted".into());
+    }
+    let conn = db.conn.lock().map_err(|e| e.to_string())?;
+    // ON DELETE CASCADE clears the session's cards/transcript/coverage/events.
+    conn.execute("DELETE FROM sessions WHERE id = ?1", params![id])
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 #[derive(serde::Serialize)]
 struct GenerateReport {
     markdown: String,
@@ -530,6 +626,10 @@ pub fn run() {
             adapt_corpus,
             restyle_card,
             retighten_corpus,
+            list_sessions,
+            create_session,
+            set_session_status,
+            delete_session,
             set_api_key
         ])
         .setup(move |app| {
