@@ -54,6 +54,7 @@ export function SessionDetail({ session, onBack }: { session: SessionRow; onBack
   const [library, setLibrary] = useState<CardRow[]>([]);
   const [showLibrary, setShowLibrary] = useState(false);
   const [material, setMaterial] = useState("");
+  const [researchUrl, setResearchUrl] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
@@ -144,6 +145,26 @@ export function SessionDetail({ session, onBack }: { session: SessionRow; onBack
       });
       setInfo(`Added ${r.cards} card${r.cards === 1 ? "" : "s"} to this session.`);
       setMaterial("");
+      refresh();
+    } catch (e) {
+      setErr(String(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const research = async () => {
+    if (!researchUrl.trim()) return;
+    setBusy("researching the page…");
+    setErr(null);
+    setInfo(null);
+    try {
+      const r = await invoke<{ title: string; bullets: number }>("preflight_research", {
+        url: researchUrl,
+        sessionId: session.id,
+      });
+      setInfo(`Added a context card: ${r.title} (${r.bullets} anchors).`);
+      setResearchUrl("");
       refresh();
     } catch (e) {
       setErr(String(e));
@@ -270,6 +291,35 @@ export function SessionDetail({ session, onBack }: { session: SessionRow; onBack
           )}
 
           <PreflightAudio />
+
+          {/* Pre-flight research → context card */}
+          <section style={{ ...panel, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+            <span style={{ fontSize: 13.5, color: "var(--text-muted)" }}>Pre-flight research</span>
+            <input
+              value={researchUrl}
+              onChange={(e) => setResearchUrl(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && researchUrl.trim() && busy === null && research()}
+              placeholder="Paste the company or job-posting URL — Anchor builds a context card"
+              style={{
+                flex: 1,
+                minWidth: 240,
+                background: "var(--bg-elevated)",
+                border: "1px solid var(--border)",
+                borderRadius: 8,
+                color: "var(--text)",
+                padding: "9px 12px",
+                fontSize: 13.5,
+              }}
+            />
+            <button
+              className="press"
+              onClick={research}
+              disabled={!researchUrl.trim() || busy !== null}
+              style={{ ...btnGhost, opacity: !researchUrl.trim() || busy ? 0.55 : 1 }}
+            >
+              Research
+            </button>
+          </section>
 
 
           {/* Add material into this session */}

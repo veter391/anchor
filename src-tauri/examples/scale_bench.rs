@@ -93,7 +93,7 @@ fn main() {
         let embed_ms = t.elapsed().as_secs_f64() * 1000.0;
 
         let t = Instant::now();
-        let _ = store::write_import(&mut conn, parsed, vecs, None).unwrap();
+        let _ = store::write_import(&mut conn, parsed, vecs, None, "prepared").unwrap();
         let write_ms = t.elapsed().as_secs_f64() * 1000.0;
 
         // Retrieval: separate the embed leg (per tick) from the pure DB query.

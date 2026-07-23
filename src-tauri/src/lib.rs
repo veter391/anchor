@@ -11,6 +11,7 @@ pub mod matcher;
 pub mod mode2;
 pub mod overlay_input;
 pub mod paths;
+pub mod preflight;
 pub mod search;
 pub mod store;
 pub mod textfmt;
@@ -72,7 +73,7 @@ fn import_markdown(
     let parsed = cards::parse_markdown(markdown, default_lang);
     let vectors = store::embed_import(embedder, &parsed)?;
     let mut conn = db.conn.lock().map_err(|e| e.to_string())?;
-    store::write_import(&mut conn, parsed, vectors, session_id)
+    store::write_import(&mut conn, parsed, vectors, session_id, "prepared")
 }
 
 #[tauri::command]
@@ -828,6 +829,7 @@ pub fn run() {
             add_library_cards_to_session,
             promote_cards_to_library,
             session_transcript,
+            preflight::preflight_research,
             get_appearance,
             set_appearance,
             app_version,

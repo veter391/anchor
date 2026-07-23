@@ -63,12 +63,14 @@ pub fn embed_import(embedder: &Embedder, parsed: &ParseOutcome) -> Result<Import
     Ok(vectors)
 }
 
-/// Fast half: one transaction, no model work.
+/// Fast half: one transaction, no model work. `source` is the card provenance
+/// tier ("prepared" for user cards; "context" for pre-flight research cards).
 pub fn write_import(
     conn: &mut Connection,
     parsed: ParseOutcome,
     vectors: ImportVectors,
     session_id: Option<&str>,
+    source: &str,
 ) -> Result<ImportReport, String> {
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     let mut bullet_vec_iter = vectors.bullets.into_iter();
@@ -76,8 +78,8 @@ pub fn write_import(
         let card_id = Uuid::new_v4().to_string();
         tx.execute(
             "INSERT INTO cards (id, session_id, title, tags, language, source, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, 'prepared', strftime('%s','now'))",
-            params![card_id, session_id, card.title, card.tags, card.lang],
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, strftime('%s','now'))",
+            params![card_id, session_id, card.title, card.tags, card.lang, source],
         )
         .map_err(|e| e.to_string())?;
 
@@ -127,7 +129,7 @@ pub fn import_cards(
     session_id: Option<&str>,
 ) -> Result<ImportReport, String> {
     let vectors = embed_import(embedder, &parsed)?;
-    write_import(conn, parsed, vectors, session_id)
+    write_import(conn, parsed, vectors, session_id, "prepared")
 }
 
 /// The active bullet-length mode ("default" | "short" | "long"). Reading it
