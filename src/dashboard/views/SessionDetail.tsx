@@ -6,6 +6,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { panel, btn, btnGhost, SectionTitle } from "../ui";
+import { PreflightAudio } from "../PreflightAudio";
 
 interface CardRow {
   id: string;
@@ -267,6 +268,9 @@ export function SessionDetail({ session, onBack }: { session: SessionRow; onBack
               {busy || info}
             </div>
           )}
+
+          <PreflightAudio />
+
 
           {/* Add material into this session */}
           <section style={{ ...panel, padding: 6 }}>
