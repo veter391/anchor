@@ -179,14 +179,112 @@ fn row_to_card(r: &rusqlite::Row<'_>) -> rusqlite::Result<CardRow> {
     })
 }
 
+/// The global library = cards not owned by any session (session_id IS NULL).
 pub fn list_cards(conn: &Connection) -> Result<Vec<CardRow>, String> {
     let sql = format!(
-        "{} ORDER BY c.created_at DESC, c.title",
+        "{} WHERE c.session_id IS NULL ORDER BY c.created_at DESC, c.title",
         card_select(&display_style(conn))
     );
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
     let rows = stmt.query_map([], row_to_card).map_err(|e| e.to_string())?;
     rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+}
+
+/// One session's own cards.
+pub fn list_session_cards(conn: &Connection, session_id: &str) -> Result<Vec<CardRow>, String> {
+    let sql = format!(
+        "{} WHERE c.session_id = ?1 ORDER BY c.created_at DESC, c.title",
+        card_select(&display_style(conn))
+    );
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![session_id], row_to_card)
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+}
+
+/// One bullet's stored row while copying: (id, position, text, short, long, provenance).
+type BulletCopyRow = (String, i64, String, Option<String>, Option<String>, String);
+
+/// Copies library cards (with bullets + variants + provenance) INTO a session,
+/// so a session can pull from the shared library without moving the original.
+/// The stored card/bullet vectors and FTS rows are copied verbatim (no re-embed),
+/// so retrieval works on the session copy immediately. Returns how many were copied.
+pub fn copy_cards_to_session(
+    conn: &mut Connection,
+    card_ids: &[String],
+    session_id: &str,
+) -> Result<usize, String> {
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let mut copied = 0usize;
+    for src in card_ids {
+        let new_card = Uuid::new_v4().to_string();
+        // Card row.
+        let n = tx
+            .execute(
+                "INSERT INTO cards (id, session_id, title, tags, language, source, created_at)
+                 SELECT ?1, ?2, title, tags, language, source, strftime('%s','now')
+                 FROM cards WHERE id = ?3",
+                params![new_card, session_id, src],
+            )
+            .map_err(|e| e.to_string())?;
+        if n == 0 {
+            continue;
+        }
+        // card_vec + card_fts copies.
+        tx.execute(
+            "INSERT INTO card_vec (card_id, embedding)
+             SELECT ?1, embedding FROM card_vec WHERE card_id = ?2",
+            params![new_card, src],
+        )
+        .map_err(|e| e.to_string())?;
+        tx.execute(
+            "INSERT INTO card_fts (card_id, title, bullets_text)
+             SELECT ?1, title, bullets_text FROM card_fts WHERE card_id = ?2",
+            params![new_card, src],
+        )
+        .map_err(|e| e.to_string())?;
+        // Bullets + their vectors, keeping order and variants.
+        let mut stmt = tx
+            .prepare(
+                "SELECT id, position, text, text_short, text_long, provenance
+                 FROM bullets WHERE card_id = ?1 ORDER BY position",
+            )
+            .map_err(|e| e.to_string())?;
+        let bullets: Vec<BulletCopyRow> = stmt
+            .query_map(params![src], |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                ))
+            })
+            .map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok())
+            .collect();
+        drop(stmt);
+        for (old_bid, pos, text, short, long, prov) in bullets {
+            let new_bid = Uuid::new_v4().to_string();
+            tx.execute(
+                "INSERT INTO bullets (id, card_id, position, text, text_short, text_long, provenance)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![new_bid, new_card, pos, text, short, long, prov],
+            )
+            .map_err(|e| e.to_string())?;
+            tx.execute(
+                "INSERT INTO bullet_vec (bullet_id, embedding)
+                 SELECT ?1, embedding FROM bullet_vec WHERE bullet_id = ?2",
+                params![new_bid, old_bid],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        copied += 1;
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(copied)
 }
 
 pub fn get_card(conn: &Connection, card_id: &str) -> Result<Option<CardRow>, String> {

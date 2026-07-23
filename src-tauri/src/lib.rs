@@ -67,11 +67,12 @@ fn import_markdown(
     embedder: &Embedder,
     markdown: &str,
     default_lang: &str,
+    session_id: Option<&str>,
 ) -> Result<store::ImportReport, String> {
     let parsed = cards::parse_markdown(markdown, default_lang);
     let vectors = store::embed_import(embedder, &parsed)?;
     let mut conn = db.conn.lock().map_err(|e| e.to_string())?;
-    store::write_import(&mut conn, parsed, vectors, None)
+    store::write_import(&mut conn, parsed, vectors, session_id)
 }
 
 #[tauri::command]
@@ -80,13 +81,34 @@ fn import_cards(
     embedder: tauri::State<'_, Arc<Embedder>>,
     markdown: String,
     default_lang: Option<String>,
+    session_id: Option<String>,
 ) -> Result<store::ImportReport, String> {
     import_markdown(
         &db,
         &embedder,
         &markdown,
         default_lang.as_deref().unwrap_or("en"),
+        session_id.as_deref(),
     )
+}
+
+#[tauri::command]
+fn list_session_cards(
+    db: tauri::State<'_, Db>,
+    session_id: String,
+) -> Result<Vec<store::CardRow>, String> {
+    let conn = db.conn.lock().map_err(|e| e.to_string())?;
+    store::list_session_cards(&conn, &session_id)
+}
+
+#[tauri::command]
+fn add_library_cards_to_session(
+    db: tauri::State<'_, Db>,
+    session_id: String,
+    card_ids: Vec<String>,
+) -> Result<usize, String> {
+    let mut conn = db.conn.lock().map_err(|e| e.to_string())?;
+    store::copy_cards_to_session(&mut conn, &card_ids, &session_id)
 }
 
 /// Recursively reads every .md file under `path` and imports the lot.
@@ -96,6 +118,7 @@ fn import_folder(
     embedder: tauri::State<'_, Arc<Embedder>>,
     path: String,
     default_lang: Option<String>,
+    session_id: Option<String>,
 ) -> Result<store::ImportReport, String> {
     let mut files = Vec::new();
     collect_md_files(Path::new(&path), &mut files, 0)?;
@@ -115,6 +138,7 @@ fn import_folder(
         &embedder,
         &combined,
         default_lang.as_deref().unwrap_or("en"),
+        session_id.as_deref(),
     )
 }
 
@@ -454,6 +478,7 @@ async fn generate_cards(
     app: tauri::AppHandle,
     text: String,
     auto: bool,
+    session_id: Option<String>,
 ) -> Result<GenerateReport, String> {
     // Snapshot provider + style under a short lock — generation is long and
     // must never hold the DB.
@@ -477,7 +502,13 @@ async fn generate_cards(
     let imported = if auto {
         let db = app.state::<Db>();
         let embedder = app.state::<Arc<Embedder>>();
-        Some(import_markdown(&db, &embedder, &report.markdown, "en")?)
+        Some(import_markdown(
+            &db,
+            &embedder,
+            &report.markdown,
+            "en",
+            session_id.as_deref(),
+        )?)
     } else {
         None
     };
@@ -725,6 +756,8 @@ pub fn run() {
             create_session,
             set_session_status,
             delete_session,
+            list_session_cards,
+            add_library_cards_to_session,
             get_appearance,
             set_appearance,
             app_version,

@@ -5,6 +5,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { panel, btn, btnGhost, SectionTitle } from "../ui";
+import { SessionDetail } from "./SessionDetail";
 
 interface SessionRow {
   id: string;
@@ -66,6 +67,19 @@ export function Sessions() {
   };
 
   const active = sessions.filter((s) => s.status !== "archived");
+  const opened = open ? sessions.find((s) => s.id === open) : null;
+
+  if (opened) {
+    return (
+      <SessionDetail
+        session={opened}
+        onBack={() => {
+          setOpenId(null);
+          refresh();
+        }}
+      />
+    );
+  }
 
   return (
     <div style={{ maxWidth: 920, margin: "0 auto", display: "grid", gap: 20 }}>
@@ -157,7 +171,8 @@ export function Sessions() {
                       }}
                     />
                     <button
-                      onClick={() => setOpenId(open === s.id ? null : s.id)}
+                      className="link"
+                      onClick={() => setOpenId(s.id)}
                       style={{ background: "none", border: "none", color: "var(--text)", fontSize: 15, cursor: "pointer", textAlign: "left", padding: 0 }}
                     >
                       {s.title}
@@ -165,6 +180,9 @@ export function Sessions() {
                     <span style={{ color: "var(--text-dim)", fontSize: 12, flex: 1 }}>
                       {s.card_count} cards
                     </span>
+                    <button className="press" onClick={() => setOpenId(s.id)} style={{ ...btnGhost, padding: "5px 10px", fontSize: 12 }}>
+                      Open
+                    </button>
                     <button onClick={() => archive(s.id)} style={{ ...btnGhost, padding: "5px 10px", fontSize: 12 }}>
                       Archive
                     </button>
@@ -176,15 +194,6 @@ export function Sessions() {
                       ✕
                     </button>
                   </div>
-                  {open === s.id && (
-                    <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid var(--border)", color: "var(--text-muted)", fontSize: 13, display: "grid", gap: 6 }}>
-                      <div>This session is ready. As you use it, it will hold:</div>
-                      <div style={{ color: "var(--text-dim)" }}>
-                        · its cards and pre-flight context · the live transcript · a coverage
-                        report of what you said and missed.
-                      </div>
-                    </div>
-                  )}
                 </div>
               ))}
             </div>
