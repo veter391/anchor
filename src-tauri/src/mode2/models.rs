@@ -76,9 +76,37 @@ pub fn is_installed(app_data: &Path, info: &ModelInfo) -> bool {
         .unwrap_or(false)
 }
 
+/// Ids with a download in flight — two concurrent downloads of the same id
+/// would interleave writes into one .part file (audit 2026-07-23).
+fn inflight() -> &'static std::sync::Mutex<std::collections::HashSet<String>> {
+    static INFLIGHT: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+        std::sync::OnceLock::new();
+    INFLIGHT.get_or_init(Default::default)
+}
+
 /// Streams the GGUF into app-data with sha256 verification. `on_progress`
 /// is called with (downloaded, total) so the UI can show a bar.
+/// Failure hygiene: the .part file is removed on EVERY error path, and a
+/// stalled connection times out instead of hanging forever.
 pub async fn download(
+    app_data: &Path,
+    info: &ModelInfo,
+    on_progress: impl Fn(u64, u64),
+) -> Result<(), String> {
+    {
+        let mut set = inflight().lock().map_err(|e| e.to_string())?;
+        if !set.insert(info.id.to_string()) {
+            return Err(format!("{} is already downloading", info.id));
+        }
+    }
+    let result = download_inner(app_data, info, on_progress).await;
+    if let Ok(mut set) = inflight().lock() {
+        set.remove(info.id);
+    }
+    result
+}
+
+async fn download_inner(
     app_data: &Path,
     info: &ModelInfo,
     on_progress: impl Fn(u64, u64),
@@ -89,8 +117,17 @@ pub async fn download(
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let final_path = model_path(app_data, info.id);
     let tmp_path = dir.join(format!("{}.part", info.id));
+    // Any early return below must not leave a stale .part behind.
+    let fail = |tmp: &Path, msg: String| -> String {
+        let _ = std::fs::remove_file(tmp);
+        msg
+    };
 
-    let resp = reqwest::Client::new()
+    let client = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let resp = client
         .get(info.url)
         .send()
         .await
@@ -104,24 +141,39 @@ pub async fn download(
     let mut hasher = Sha256::new();
     let mut downloaded: u64 = 0;
     let mut stream = resp.bytes_stream();
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|e| format!("download stream error: {e}"))?;
+    loop {
+        // Per-chunk stall timeout: a dead connection must error, not hang.
+        let next = tokio::time::timeout(std::time::Duration::from_secs(60), stream.next()).await;
+        let Ok(item) = next else {
+            return Err(fail(&tmp_path, "download stalled (no data for 60 s)".into()));
+        };
+        let Some(chunk) = item else { break };
+        let chunk = match chunk {
+            Ok(c) => c,
+            Err(e) => return Err(fail(&tmp_path, format!("download stream error: {e}"))),
+        };
         hasher.update(&chunk);
-        file.write_all(&chunk).map_err(|e| e.to_string())?;
+        if let Err(e) = file.write_all(&chunk) {
+            return Err(fail(&tmp_path, e.to_string()));
+        }
         downloaded += chunk.len() as u64;
         on_progress(downloaded, total);
     }
-    file.flush().map_err(|e| e.to_string())?;
+    if let Err(e) = file.flush() {
+        return Err(fail(&tmp_path, e.to_string()));
+    }
     drop(file);
 
     let digest = format!("{:x}", hasher.finalize());
     if digest != info.sha256 {
-        let _ = std::fs::remove_file(&tmp_path);
-        return Err(format!(
-            "sha256 mismatch for {} (got {}…, expected {}…) — download rejected",
-            info.id,
-            &digest[..12],
-            &info.sha256[..12]
+        return Err(fail(
+            &tmp_path,
+            format!(
+                "sha256 mismatch for {} (got {}…, expected {}…) — download rejected",
+                info.id,
+                &digest[..12],
+                &info.sha256[..12]
+            ),
         ));
     }
     std::fs::rename(&tmp_path, &final_path).map_err(|e| e.to_string())?;

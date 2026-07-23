@@ -54,20 +54,42 @@ pub struct AssembledCard {
 pub struct Material {
     /// Every prepared bullet across the corpus (the primary grounding source).
     pub corpus_bullets: Vec<String>,
+    /// Stored embeddings parallel to `corpus_bullets` (from bullet_vec) —
+    /// lets assembly rank bullets and the post-check skip re-embedding the
+    /// corpus on every fire. `None` for bullets missing a vector.
+    pub corpus_vecs: Vec<Option<Vec<f32>>>,
     /// Optional extra context the user attached to the session.
     pub cv: Option<String>,
     pub job_posting: Option<String>,
     pub research: Option<String>,
 }
 
+/// At most this many corpus bullets enter the assembly prompt, ranked by
+/// relevance to the question — a big imported corpus must never overflow
+/// the local model's context window (audit 2026-07-23).
+const PROMPT_BULLET_CAP: usize = 48;
+
 impl Material {
-    /// All grounding text as one bag of chunks for the post-check.
-    fn chunks(&self) -> Vec<&str> {
-        let mut v: Vec<&str> = self.corpus_bullets.iter().map(|s| s.as_str()).collect();
-        for extra in [&self.cv, &self.job_posting, &self.research].into_iter().flatten() {
-            v.push(extra.as_str());
-        }
-        v
+    fn extras(&self) -> impl Iterator<Item = &String> {
+        [&self.cv, &self.job_posting, &self.research]
+            .into_iter()
+            .flatten()
+    }
+
+    /// The corpus bullets most relevant to the question, capped for the
+    /// prompt. Bullets without a stored vector rank last (score 0).
+    fn top_bullets(&self, qvec: &[f32], cap: usize) -> Vec<String> {
+        let mut scored: Vec<(f64, &String)> = self
+            .corpus_bullets
+            .iter()
+            .zip(self.corpus_vecs.iter().chain(std::iter::repeat(&None)))
+            .map(|(text, vec)| {
+                let s = vec.as_ref().map(|v| cosine(qvec, v)).unwrap_or(0.0);
+                (s, text)
+            })
+            .collect();
+        scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        scored.into_iter().take(cap).map(|(_, t)| t.clone()).collect()
     }
 }
 
@@ -124,8 +146,28 @@ pub fn ground_check(
     raw_bullets: &[String],
     title: &str,
 ) -> Result<AssembledCard, String> {
-    let chunks = material.chunks();
-    let bullets = if chunks.is_empty() {
+    // Reference vectors: STORED corpus embeddings (no per-fire re-embedding
+    // of the whole corpus — audit 2026-07-23), plus one embed pass for any
+    // bullet missing a vector and the free-text extras (CV/posting/research).
+    let mut ref_vecs: Vec<Vec<f32>> = material.corpus_vecs.iter().flatten().cloned().collect();
+    let mut to_embed: Vec<(String, String)> = material
+        .corpus_bullets
+        .iter()
+        .zip(material.corpus_vecs.iter().chain(std::iter::repeat(&None)))
+        .filter(|(_, v)| v.is_none())
+        .map(|(t, _)| (String::new(), t.clone()))
+        .collect();
+    to_embed.extend(
+        material
+            .extras()
+            .filter(|t| !t.trim().is_empty())
+            .map(|t| (String::new(), t.clone())),
+    );
+    if !to_embed.is_empty() {
+        ref_vecs.extend(embedder.embed_passages(&to_embed)?);
+    }
+
+    let bullets = if ref_vecs.is_empty() {
         // No material to check against → everything is model-knowledge.
         raw_bullets
             .iter()
@@ -136,15 +178,10 @@ pub fn ground_check(
             })
             .collect()
     } else {
-        // Embed material chunks once and each bullet, compare max cosine.
-        let chunk_items: Vec<(String, String)> =
-            chunks.iter().map(|c| (String::new(), c.to_string())).collect();
-        let chunk_vecs = embedder.embed_passages(&chunk_items)?;
-
         let mut out = Vec::new();
         for bt in raw_bullets.iter().take(MAX_BULLETS) {
             let bvec = embedder.embed_query(bt)?;
-            let best = chunk_vecs
+            let best = ref_vecs
                 .iter()
                 .map(|cv| cosine(&bvec, cv))
                 .fold(f64::MIN, f64::max);
@@ -228,11 +265,14 @@ pub async fn assemble(
     let qvec = embedder.embed_query(question)?;
     // Built-in universal bridges relevant to THIS question (owner decision:
     // the card must help even when the user's material is silent). They are
-    // hints the model must mark [K]; they never enter Material::chunks(), so
+    // hints the model must mark [K]; they never enter the post-check refs, so
     // the post-check labels anything derived from them as model-knowledge.
     let bridges = fallback_kb::relevant(embedder, &qvec, REL_FLOOR, 6).unwrap_or_default();
 
-    let material_text = material_to_prompt(material);
+    // Only the question-relevant slice of the corpus enters the prompt — a
+    // large imported corpus must never overflow the local context window.
+    let prompt_bullets = material.top_bullets(&qvec, PROMPT_BULLET_CAP);
+    let material_text = material_to_prompt(&prompt_bullets, material);
     let prompt = AssemblyPrompt {
         question: question.to_string(),
         material: material_text,
@@ -411,11 +451,11 @@ pub fn keyring_has(provider: &str) -> bool {
     keyring_get(provider).is_ok()
 }
 
-fn material_to_prompt(m: &Material) -> String {
+fn material_to_prompt(bullets: &[String], m: &Material) -> String {
     let mut s = String::new();
-    if !m.corpus_bullets.is_empty() {
+    if !bullets.is_empty() {
         s.push_str("Prepared notes:\n");
-        for b in &m.corpus_bullets {
+        for b in bullets {
             s.push_str("- ");
             s.push_str(b);
             s.push('\n');

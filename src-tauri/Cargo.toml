@@ -23,7 +23,7 @@ anyhow = "1"
 # Mode-2 LLM calls over HTTP. rustls (not native-tls) to avoid an OpenSSL
 # build dep; json feature for typed request/response bodies.
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
-tokio = { version = "1", features = ["rt", "macros"] }
+tokio = { version = "1", features = ["rt", "macros", "time"] }
 futures-util = "0.3"
 sha2 = "0.10"
 # Embedded local LLM for the free Mode-2 path (no external server/UI). ggml

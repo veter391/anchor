@@ -242,8 +242,14 @@ async fn download_model(app: tauri::AppHandle, id: String) -> Result<(), String>
 
 #[tauri::command]
 fn delete_model(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    // Registry-validate the id — never join raw frontend input into a path
+    // (audit 2026-07-23: "../x" would escape the models dir).
+    let info = mode2::models::find(&id).ok_or("unknown model id")?;
     let app_data = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    mode2::models::delete(&app_data, &id)
+    // If this model is the one loaded in RAM, drop it: keeping it would both
+    // hold ~1-2 GB and let `ensure` serve a model whose file is gone.
+    app.state::<Arc<mode2::local::LocalEngine>>().unload_if(info.id);
+    mode2::models::delete(&app_data, info.id)
 }
 
 #[derive(serde::Serialize)]

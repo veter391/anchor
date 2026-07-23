@@ -7,8 +7,8 @@
 //!
 //! Honesty contract: these are NOT the user's material. They are handed to
 //! the model as hints it must mark [K]; they are deliberately excluded from
-//! `Material::chunks()`, so the embedding post-check independently labels
-//! anything derived from them as model-knowledge (violet).
+//! the post-check's reference vectors, so anything derived from them is
+//! independently labelled model-knowledge (violet).
 //!
 //! Speed contract: anchors are embedded once (lazy, cached); per question we
 //! select only the few relevant lines, so the prompt grows by ~60 tokens,

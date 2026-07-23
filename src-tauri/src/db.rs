@@ -5,7 +5,7 @@
 use rusqlite::Connection;
 use std::path::Path;
 
-pub const SCHEMA_VERSION: i64 = 4;
+pub const SCHEMA_VERSION: i64 = 5;
 
 /// Registers sqlite-vec as an auto-extension. MUST run before any connection
 /// opens (the app calls it once at startup; benches/tests call it themselves).
@@ -79,8 +79,8 @@ CREATE TABLE IF NOT EXISTS transcript (
 CREATE TABLE IF NOT EXISTS coverage (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
   session_id    TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-  card_id       TEXT NOT NULL REFERENCES cards(id),
-  bullet_id     TEXT REFERENCES bullets(id),
+  card_id       TEXT NOT NULL REFERENCES cards(id) ON DELETE CASCADE,
+  bullet_id     TEXT REFERENCES bullets(id) ON DELETE CASCADE,
   covered       INTEGER NOT NULL,
   score         REAL,
   ts_ms         INTEGER
@@ -153,9 +153,51 @@ pub fn open_and_migrate(path: &Path) -> rusqlite::Result<Connection> {
         // v4: per-bullet length variants (owner decision 2026-07-23 — the
         // bullet-length setting restyles the WHOLE corpus instantly, so the
         // variants are stored, not regenerated). Base `text` stays canonical.
+        // Column-existence guard: a crash between the two ALTERs must not
+        // brick the next startup with "duplicate column" (audit 2026-07-23).
+        let has_col = |col: &str| -> rusqlite::Result<bool> {
+            let mut stmt = conn.prepare("SELECT 1 FROM pragma_table_info('bullets') WHERE name = ?1")?;
+            stmt.exists([col])
+        };
+        conn.execute_batch("BEGIN")?;
+        if !has_col("text_short")? {
+            conn.execute_batch("ALTER TABLE bullets ADD COLUMN text_short TEXT;")?;
+        }
+        if !has_col("text_long")? {
+            conn.execute_batch("ALTER TABLE bullets ADD COLUMN text_long TEXT;")?;
+        }
+        conn.execute_batch("COMMIT")?;
+    }
+
+    // v5: coverage FKs lacked ON DELETE CASCADE, so any covered bullet made
+    // its card permanently undeletable (audit 2026-07-23, verified by repro).
+    // Gate on the ACTUAL schema, not user_version — self-heals any DB whose
+    // version got bumped without the rebuild. SQLite cannot alter
+    // constraints — rebuild the table.
+    let coverage_lacks_cascade: bool = user_version > 0 && {
+        let mut stmt = conn.prepare(
+            "SELECT 1 FROM pragma_foreign_key_list('coverage')
+             WHERE \"table\" = 'cards' AND on_delete <> 'CASCADE'",
+        )?;
+        stmt.exists([])?
+    };
+    if coverage_lacks_cascade {
         conn.execute_batch(
-            "ALTER TABLE bullets ADD COLUMN text_short TEXT;
-             ALTER TABLE bullets ADD COLUMN text_long  TEXT;",
+            "BEGIN;
+             CREATE TABLE coverage_v5 (
+               id            INTEGER PRIMARY KEY AUTOINCREMENT,
+               session_id    TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+               card_id       TEXT NOT NULL REFERENCES cards(id) ON DELETE CASCADE,
+               bullet_id     TEXT REFERENCES bullets(id) ON DELETE CASCADE,
+               covered       INTEGER NOT NULL,
+               score         REAL,
+               ts_ms         INTEGER
+             );
+             INSERT INTO coverage_v5 (id, session_id, card_id, bullet_id, covered, score, ts_ms)
+               SELECT id, session_id, card_id, bullet_id, covered, score, ts_ms FROM coverage;
+             DROP TABLE coverage;
+             ALTER TABLE coverage_v5 RENAME TO coverage;
+             COMMIT;",
         )?;
     }
 

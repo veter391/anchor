@@ -27,6 +27,9 @@ pub struct LiveState {
     /// while the same unmatched question sits in the window).
     mode2_inflight: AtomicBool,
     mode2_last_q: Mutex<String>,
+    /// Bumped by reset_live; an in-flight assembly from a previous epoch
+    /// must not push its stale card onto the freshly-reset overlay.
+    mode2_epoch: std::sync::atomic::AtomicU64,
 }
 
 struct Windows {
@@ -47,6 +50,7 @@ impl Default for LiveState {
             dirty: AtomicBool::new(false),
             mode2_inflight: AtomicBool::new(false),
             mode2_last_q: Mutex::new(String::new()),
+            mode2_epoch: std::sync::atomic::AtomicU64::new(0),
         }
     }
 }
@@ -113,6 +117,7 @@ pub fn reset_live(
     }
     lock_or_recover(&live.engine).reset();
     live.mode2_inflight.store(false, Ordering::SeqCst);
+    live.mode2_epoch.fetch_add(1, Ordering::SeqCst);
     lock_or_recover(&live.mode2_last_q).clear();
     // Clear the scratch session's live rows so a re-run doesn't accumulate
     // duplicate coverage/event rows (coverage is sticky in memory; the DB is
@@ -255,15 +260,18 @@ fn tick(app: &tauri::AppHandle) -> Result<(), String> {
                     .map(|d| {
                         // cos = 1 − L2²/2 holds for unit vectors when d is the
                         // (non-squared) Euclidean L2 — sqlite-vec's vec0 default.
-                        // Guard in debug builds against a future metric change:
-                        // L2 of two unit vectors is in [0, 2].
-                        debug_assert!(
-                            (0.0..=2.001).contains(&d),
-                            "unexpected vec distance {d}; is the vec0 metric still L2?"
-                        );
+                        // Always-on guard: a dependency bump changing the metric
+                        // must scream in release builds too (audit 2026-07-23).
+                        if !(0.0..=2.001).contains(&d) {
+                            tracing::error!(d, "vec distance outside L2 range — metric changed?");
+                        }
                         1.0 - (d * d) / 2.0
                     })
-                    .unwrap_or(BM25_ONLY_SCORE),
+                    // Keyword-only hits: sub-order by real BM25 rank so ties are
+                    // deterministic, not HashMap-iteration luck (audit 2026-07-23).
+                    .unwrap_or_else(|| {
+                        BM25_ONLY_SCORE - m.bm25_rank.unwrap_or(50) as f64 * 1e-3
+                    }),
             })
             .collect();
         // Order by real similarity so decide()'s `first()` is the closest card.
@@ -457,19 +465,26 @@ fn maybe_assemble(
     let app2 = app.clone();
     let embedder = app.state::<std::sync::Arc<crate::embed::Embedder>>().inner().clone();
     let question = q.to_string();
+    let epoch = live.mode2_epoch.load(Ordering::SeqCst);
     // Off the ticker thread: network + embedding, then emit the result.
     tauri::async_runtime::spawn(async move {
         let result =
             crate::mode2::assemble(&choice, &embedder, &material, &question, &style).await;
         let live = app2.state::<LiveState>();
+        // A reset_live during assembly supersedes this run — never push a
+        // stale card onto the freshly-reset overlay (audit 2026-07-23).
+        let stale = live.mode2_epoch.load(Ordering::SeqCst) != epoch;
         match result {
-            Ok(card) => {
+            Ok(card) if !stale => {
                 app2.emit_to("overlay", "card:assembled", &card).ok();
                 app2.emit_to("dashboard", "mode2:done", &card).ok();
             }
+            Ok(_) => tracing::info!("mode2: discarding assembly from a superseded run"),
             Err(e) => {
                 tracing::warn!(error = %e, "mode2 assembly failed");
-                app2.emit_to("dashboard", "mode2:error", &e).ok();
+                if !stale {
+                    app2.emit_to("dashboard", "mode2:error", &e).ok();
+                }
             }
         }
         live.mode2_inflight.store(false, Ordering::SeqCst);
@@ -519,19 +534,33 @@ pub(crate) fn resolve_provider(
 }
 
 fn gather_material(conn: &rusqlite::Connection) -> Result<crate::mode2::Material, String> {
+    // Bullets WITH their stored embeddings: assembly ranks them by relevance
+    // to the question (prompt stays inside the local model's context however
+    // big the corpus is) and the post-check reuses the vectors instead of
+    // re-embedding the whole corpus per fire (audit 2026-07-23).
     let mut stmt = conn
         .prepare(
-            "SELECT b.text FROM bullets b JOIN cards c ON b.card_id = c.id
+            "SELECT b.text, v.embedding FROM bullets b
+             JOIN cards c ON b.card_id = c.id
+             LEFT JOIN bullet_vec v ON v.bullet_id = b.id
              WHERE c.source = 'prepared' ORDER BY c.created_at, b.position",
         )
         .map_err(|e| e.to_string())?;
-    let bullets: Vec<String> = stmt
-        .query_map([], |r| r.get::<_, String>(0))
-        .map_err(|e| e.to_string())?
-        .filter_map(|r| r.ok())
-        .collect();
+    let rows = stmt
+        .query_map([], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, Option<Vec<u8>>>(1)?))
+        })
+        .map_err(|e| e.to_string())?;
+    let mut bullets = Vec::new();
+    let mut vecs = Vec::new();
+    for row in rows.flatten() {
+        let (text, blob) = row;
+        bullets.push(text);
+        vecs.push(blob.map(|b| crate::embed::blob_to_vec(&b)));
+    }
     Ok(crate::mode2::Material {
         corpus_bullets: bullets,
+        corpus_vecs: vecs,
         ..Default::default()
     })
 }

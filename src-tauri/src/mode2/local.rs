@@ -61,6 +61,17 @@ impl LocalEngine {
         }
     }
 
+    /// Frees the model only if `id` is the one currently in memory — used
+    /// when that model's file is deleted (otherwise `ensure` would keep
+    /// serving a model whose file no longer exists).
+    pub fn unload_if(&self, id: &str) {
+        if let Ok(mut g) = self.loaded.lock() {
+            if g.as_ref().map(|l| l.id.as_str()) == Some(id) {
+                *g = None;
+            }
+        }
+    }
+
     /// Blocking generation from already-owned prompt text (safe to call inside
     /// spawn_blocking). The model must already be loaded via `ensure`.
     fn generate(&self, sys: &str, user: &str) -> Result<RawAssembly, String> {
