@@ -783,6 +783,17 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .on_window_event(|window, event| {
+            // Closing the main dashboard window quits the whole app. Otherwise the
+            // frameless, always-on-top overlay lives in its own window, so closing
+            // the dashboard would leave that widget on screen and keep the process
+            // (ticker, audio capture, overlay cursor-poll) alive in the background.
+            if window.label() == "dashboard" {
+                if let tauri::WindowEvent::CloseRequested { .. } = event {
+                    window.app_handle().exit(0);
+                }
+            }
+        })
         .manage(overlay_input::Zones::default())
         .manage(live::LiveState::default())
         .manage(audio::AudioState::default())
