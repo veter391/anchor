@@ -86,19 +86,19 @@ pub(crate) fn restyle_current_card(app: &tauri::AppHandle) -> Result<(), String>
 
 #[tauri::command]
 pub fn feed_transcript(
-    live: tauri::State<'_, LiveState>,
+    app: tauri::AppHandle,
     speaker: String,
     text: String,
 ) -> Result<(), String> {
-    feed_transcript_internal(&live, &speaker, &text)
+    feed_and_persist(&app, &speaker, &text)
 }
 
-/// Shared entry point for both the manual command and the audio worker.
+/// Push a confirmed line into the rolling windows; returns the timeline ts (ms).
 pub fn feed_transcript_internal(
     live: &LiveState,
     speaker: &str,
     text: &str,
-) -> Result<(), String> {
+) -> Result<u64, String> {
     let mut w = lock_or_recover(&live.windows);
     let ts_ms = w.origin.elapsed().as_millis() as u64;
     match speaker {
@@ -107,6 +107,26 @@ pub fn feed_transcript_internal(
         other => return Err(format!("unknown speaker: {other}")),
     }
     live.dirty.store(true, Ordering::SeqCst);
+    Ok(ts_ms)
+}
+
+/// Feed a confirmed line AND persist it to the ACTIVE session's transcript
+/// (text only — audio never touches disk, 08_LEGAL). The scratch dev harness is
+/// never persisted. Shared by the audio worker and the manual feed command.
+pub fn feed_and_persist(app: &tauri::AppHandle, speaker: &str, text: &str) -> Result<(), String> {
+    let live = app.state::<LiveState>();
+    let ts_ms = feed_transcript_internal(&live, speaker, text)?;
+    let session = lock_or_recover(&live.active_session).clone();
+    if session != SCRATCH_SESSION {
+        let db = app.state::<crate::Db>();
+        let conn = db.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT INTO transcript (session_id, speaker, ts_ms, text)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![session, speaker, ts_ms as i64, text],
+        )
+        .map_err(|e| e.to_string())?;
+    }
     Ok(())
 }
 

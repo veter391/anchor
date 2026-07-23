@@ -168,6 +168,17 @@ export function SessionDetail({ session, onBack }: { session: SessionRow; onBack
     await invoke("delete_card", { cardId: id }).catch((e) => setErr(String(e)));
     refresh();
   };
+  const promote = async (id: string) => {
+    setErr(null);
+    setInfo(null);
+    try {
+      await invoke<number>("promote_cards_to_library", { cardIds: [id] });
+      setInfo("Copied to your library for reuse.");
+      invoke<CardRow[]>("list_cards").then(setLibrary).catch(() => {});
+    } catch (e) {
+      setErr(String(e));
+    }
+  };
 
   return (
     <div style={{ maxWidth: 860, margin: "0 auto", display: "grid", gap: 20 }}>
@@ -248,7 +259,7 @@ export function SessionDetail({ session, onBack }: { session: SessionRow; onBack
       )}
 
       {closed && report ? (
-        <ReportView report={report} onAgain={takeAgain} />
+        <ReportView report={report} onAgain={takeAgain} sessionId={session.id} />
       ) : (
         <>
           {(info || busy) && (
@@ -331,6 +342,14 @@ export function SessionDetail({ session, onBack }: { session: SessionRow; onBack
                     <span style={{ color: "var(--text-dim)", fontSize: 12, flex: 1 }}>
                       {c.bullets.length} anchors · {c.language}
                     </span>
+                    <button
+                      className="press"
+                      onClick={() => promote(c.id)}
+                      title="Copy this card to your library so you can reuse it in other sessions"
+                      style={{ ...btnGhost, padding: "4px 10px", fontSize: 12 }}
+                    >
+                      ↑ Library
+                    </button>
                     <button onClick={() => remove(c.id)} title="Remove from this session" style={{ background: "none", border: "none", color: "var(--text-dim)", cursor: "pointer" }}>
                       ✕
                     </button>
@@ -345,11 +364,32 @@ export function SessionDetail({ session, onBack }: { session: SessionRow; onBack
   );
 }
 
-function ReportView({ report, onAgain }: { report: Report; onAgain: () => void }) {
+interface TranscriptLine {
+  speaker: string;
+  ts_ms: number;
+  text: string;
+}
+
+function ReportView({
+  report,
+  onAgain,
+  sessionId,
+}: {
+  report: Report;
+  onAgain: () => void;
+  sessionId: string;
+}) {
   const green = report.verdict === "green";
   const cameUp = report.cards.filter((c) => c.came_up);
   const untouched = report.cards.filter((c) => !c.came_up);
   const accent = green ? "var(--green)" : "var(--red)";
+  const [transcript, setTranscript] = useState<TranscriptLine[]>([]);
+  const [showTranscript, setShowTranscript] = useState(false);
+  useEffect(() => {
+    invoke<TranscriptLine[]>("session_transcript", { sessionId })
+      .then(setTranscript)
+      .catch(() => {});
+  }, [sessionId]);
   return (
     <div style={{ display: "grid", gap: 18 }}>
       <div className="rise-in" style={{ ...panel, borderColor: accent, display: "flex", alignItems: "center", gap: 14 }}>
@@ -408,6 +448,38 @@ function ReportView({ report, onAgain }: { report: Report; onAgain: () => void }
           {untouched.length} card{untouched.length === 1 ? "" : "s"} didn't come up:{" "}
           {untouched.map((c) => c.title).join(", ")}.
         </p>
+      )}
+
+      {transcript.length > 0 && (
+        <div>
+          <button
+            className="link"
+            onClick={() => setShowTranscript((s) => !s)}
+            style={{ background: "none", border: "none", fontSize: 13, padding: 0 }}
+          >
+            {showTranscript ? "Hide transcript" : `Transcript — ${transcript.length} lines`}
+          </button>
+          {showTranscript && (
+            <div style={{ ...panel, marginTop: 8, display: "grid", gap: 5, maxHeight: 360, overflowY: "auto" }}>
+              {transcript.map((t, i) => (
+                <div key={i} style={{ fontSize: 13, display: "flex", gap: 10, alignItems: "baseline" }}>
+                  <span
+                    style={{
+                      color: t.speaker === "them" ? "var(--accent)" : "var(--text-muted)",
+                      minWidth: 42,
+                      fontSize: 11,
+                      textTransform: "uppercase",
+                      letterSpacing: "0.03em",
+                    }}
+                  >
+                    {t.speaker}
+                  </span>
+                  <span style={{ flex: 1, color: "var(--text-soft)", lineHeight: 1.5 }}>{t.text}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       )}
     </div>
   );

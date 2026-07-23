@@ -206,14 +206,40 @@ pub fn list_session_cards(conn: &Connection, session_id: &str) -> Result<Vec<Car
 /// One bullet's stored row while copying: (id, position, text, short, long, provenance).
 type BulletCopyRow = (String, i64, String, Option<String>, Option<String>, String);
 
-/// Copies library cards (with bullets + variants + provenance) INTO a session,
-/// so a session can pull from the shared library without moving the original.
-/// The stored card/bullet vectors and FTS rows are copied verbatim (no re-embed),
-/// so retrieval works on the session copy immediately. Returns how many were copied.
-pub fn copy_cards_to_session(
+#[derive(Serialize)]
+pub struct TranscriptLine {
+    pub speaker: String,
+    pub ts_ms: i64,
+    pub text: String,
+}
+
+/// A session's stored transcript (confirmed lines only, in order). Text only —
+/// audio is never written to disk (08_LEGAL).
+pub fn session_transcript(conn: &Connection, session_id: &str) -> Result<Vec<TranscriptLine>, String> {
+    let mut stmt = conn
+        .prepare("SELECT speaker, ts_ms, text FROM transcript WHERE session_id = ?1 ORDER BY ts_ms, id")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![session_id], |r| {
+            Ok(TranscriptLine {
+                speaker: r.get(0)?,
+                ts_ms: r.get(1)?,
+                text: r.get(2)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+}
+
+/// Copies cards (with bullets + variants + provenance) to a new owner: a session
+/// (`Some(id)`) when pulling from the library, or the global library (`None`)
+/// when promoting a session card. The original is left in place; the stored
+/// card/bullet vectors and FTS rows are copied verbatim (no re-embed), so
+/// retrieval works on the copy immediately. Returns how many were copied.
+pub fn copy_cards(
     conn: &mut Connection,
     card_ids: &[String],
-    session_id: &str,
+    target: Option<&str>,
 ) -> Result<usize, String> {
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     let mut copied = 0usize;
@@ -225,7 +251,7 @@ pub fn copy_cards_to_session(
                 "INSERT INTO cards (id, session_id, title, tags, language, source, created_at)
                  SELECT ?1, ?2, title, tags, language, source, strftime('%s','now')
                  FROM cards WHERE id = ?3",
-                params![new_card, session_id, src],
+                params![new_card, target, src],
             )
             .map_err(|e| e.to_string())?;
         if n == 0 {

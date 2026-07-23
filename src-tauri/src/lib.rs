@@ -108,7 +108,28 @@ fn add_library_cards_to_session(
     card_ids: Vec<String>,
 ) -> Result<usize, String> {
     let mut conn = db.conn.lock().map_err(|e| e.to_string())?;
-    store::copy_cards_to_session(&mut conn, &card_ids, &session_id)
+    store::copy_cards(&mut conn, &card_ids, Some(&session_id))
+}
+
+/// Promote session-owned cards into the global library (a copy; the session
+/// keeps its own). Lets a card built inside a call be reused across sessions.
+#[tauri::command]
+fn promote_cards_to_library(
+    db: tauri::State<'_, Db>,
+    card_ids: Vec<String>,
+) -> Result<usize, String> {
+    let mut conn = db.conn.lock().map_err(|e| e.to_string())?;
+    store::copy_cards(&mut conn, &card_ids, None)
+}
+
+/// A session's stored transcript (text only) for its detail/report view.
+#[tauri::command]
+fn session_transcript(
+    db: tauri::State<'_, Db>,
+    session_id: String,
+) -> Result<Vec<store::TranscriptLine>, String> {
+    let conn = db.conn.lock().map_err(|e| e.to_string())?;
+    store::session_transcript(&conn, &session_id)
 }
 
 /// Recursively reads every .md file under `path` and imports the lot.
@@ -791,6 +812,8 @@ pub fn run() {
             delete_session,
             list_session_cards,
             add_library_cards_to_session,
+            promote_cards_to_library,
+            session_transcript,
             get_appearance,
             set_appearance,
             app_version,

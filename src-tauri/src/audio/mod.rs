@@ -5,7 +5,6 @@
 pub mod asr;
 pub mod capture;
 
-use crate::live::LiveState;
 use asr::{Asr, Emit};
 use capture::{AudioChunk, Channel};
 use serde::Serialize;
@@ -13,7 +12,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tauri::{Emitter, Manager};
+use tauri::Emitter;
 
 /// A "them" channel that stays silent this long while listening is almost
 /// always a wrong/dead output endpoint — the classic earbuds/loopback trap.
@@ -240,9 +239,9 @@ fn worker_loop(
                     });
 
                 if !is_echo {
-                    // Same path the Phase-3 player used → the match engine ticks.
-                    let live = app.state::<LiveState>();
-                    if let Err(e) = crate::live::feed_transcript_internal(&live, speaker, &text) {
+                    // Same path the Phase-3 player used → the match engine ticks,
+                    // and the confirmed line lands in the session transcript.
+                    if let Err(e) = crate::live::feed_and_persist(&app, speaker, &text) {
                         tracing::warn!(error = %e, "feed_transcript failed");
                     }
                 } else {
