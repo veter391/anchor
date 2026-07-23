@@ -100,7 +100,12 @@ pub fn query_cards_with_vec(
         }
     }
 
-    // RRF fusion.
+    Ok(fuse(legs))
+}
+
+/// RRF fusion over the collected legs → ranked matches. Shared by the global
+/// and the session-scoped query paths so both fuse identically.
+fn fuse(legs: HashMap<String, Match>) -> Vec<Match> {
     let mut matches: Vec<Match> = legs
         .into_values()
         .map(|mut m| {
@@ -112,7 +117,80 @@ pub fn query_cards_with_vec(
         .collect();
     matches.sort_by(|a, b| b.fused.total_cmp(&a.fused));
     matches.truncate(LEG_LIMIT);
-    Ok(matches)
+    matches
+}
+
+/// L2 (Euclidean) distance — matches sqlite-vec's vec0 default metric, so the
+/// ticker's `cos = 1 − d²/2` (valid for unit vectors) stays correct on both paths.
+fn l2(a: &[f32], b: &[f32]) -> f64 {
+    a.iter()
+        .zip(b)
+        .map(|(x, y)| {
+            let d = (x - y) as f64;
+            d * d
+        })
+        .sum::<f64>()
+        .sqrt()
+}
+
+/// Session-scoped hybrid retrieval: the same RRF fusion, but only over cards
+/// owned by `session_id`. The vector leg brute-forces L2 over the session's
+/// stored card vectors (a session's working set is small — tens of cards — so
+/// this is cheaper than a filtered KNN and exact, with no pruning miss); the
+/// keyword leg joins card_fts to cards on the session. The global path
+/// (`query_cards_with_vec`) is deliberately left untouched.
+pub fn query_cards_scoped(
+    conn: &Connection,
+    qvec: &[f32],
+    text: &str,
+    session_id: &str,
+) -> Result<Vec<Match>, String> {
+    let mut legs: HashMap<String, Match> = HashMap::new();
+
+    // Vector leg: brute-force L2 over the session's card vectors.
+    let mut scored: Vec<(String, f64)> = crate::store::card_vectors_for_session(conn, session_id)?
+        .into_iter()
+        .map(|(id, v)| (id, l2(qvec, &v)))
+        .collect();
+    scored.sort_by(|a, b| a.1.total_cmp(&b.1));
+    for (rank, (card_id, dist)) in scored.into_iter().take(LEG_LIMIT).enumerate() {
+        let entry = legs.entry(card_id.clone()).or_insert(Match {
+            card_id,
+            fused: 0.0,
+            vec_rank: None,
+            vec_distance: None,
+            bm25_rank: None,
+        });
+        entry.vec_rank = Some(rank + 1);
+        entry.vec_distance = Some(dist);
+    }
+
+    // Keyword leg: FTS5 joined to the session.
+    if let Some(fts_query) = build_fts_query(text) {
+        let mut stmt = conn
+            .prepare(
+                "SELECT f.card_id FROM card_fts f JOIN cards c ON c.id = f.card_id
+                 WHERE card_fts MATCH ?1 AND c.session_id = ?2 ORDER BY rank LIMIT ?3",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![fts_query, session_id, LEG_LIMIT as i64], |r| {
+                r.get::<_, String>(0)
+            })
+            .map_err(|e| e.to_string())?;
+        for (rank, card_id) in rows.flatten().enumerate() {
+            let entry = legs.entry(card_id.clone()).or_insert(Match {
+                card_id,
+                fused: 0.0,
+                vec_rank: None,
+                vec_distance: None,
+                bm25_rank: None,
+            });
+            entry.bm25_rank = Some(rank + 1);
+        }
+    }
+
+    Ok(fuse(legs))
 }
 
 /// Lowercase, strip punctuation, quote each token, OR them together.

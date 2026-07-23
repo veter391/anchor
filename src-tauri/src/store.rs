@@ -514,6 +514,33 @@ pub fn bullet_vectors_for_card(
     Ok(out)
 }
 
+/// A session's card vectors (card_id, embedding) for session-scoped live
+/// retrieval. A session's working set is small (tens of cards), so the ticker
+/// brute-forces L2 over these instead of a filtered KNN — cheaper and exact.
+pub fn card_vectors_for_session(
+    conn: &Connection,
+    session_id: &str,
+) -> Result<Vec<(String, Vec<f32>)>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT v.card_id, v.embedding FROM card_vec v
+             JOIN cards c ON c.id = v.card_id
+             WHERE c.session_id = ?1",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![session_id], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, Vec<u8>>(1)?))
+        })
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for row in rows {
+        let (id, blob) = row.map_err(|e| e.to_string())?;
+        out.push((id, crate::embed::blob_to_vec(&blob)));
+    }
+    Ok(out)
+}
+
 /// Deletes one card; bullets cascade via FK, derived FTS/vec rows via triggers.
 pub fn delete_card(conn: &Connection, card_id: &str) -> Result<(), String> {
     conn.execute("DELETE FROM cards WHERE id = ?1", params![card_id])

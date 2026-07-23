@@ -8,7 +8,7 @@
 
 use crate::matcher::{Candidate, Decision, MatchEngine, RollingWindow, Thresholds};
 use crate::{search, store};
-use rusqlite::params;
+use rusqlite::{params, OptionalExtension};
 use serde::Serialize;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
@@ -21,6 +21,11 @@ pub const SCRATCH_SESSION: &str = "scratch";
 pub struct LiveState {
     windows: Mutex<Windows>,
     pub engine: Mutex<MatchEngine>,
+    /// The session the live loop is bound to right now. Defaults to the scratch
+    /// session (the Phase-3 dev harness — retrieval stays global there, exactly
+    /// as verified). Set to a real session id by `set_active_session`, which
+    /// scopes retrieval, coverage and card_events to that session's own cards.
+    active_session: Mutex<String>,
     dirty: AtomicBool,
     /// Mode-2 debounce: true while an assembly is in flight, plus the
     /// question text we last assembled for (so we don't re-fire every tick
@@ -47,6 +52,7 @@ impl Default for LiveState {
                 origin: Instant::now(),
             }),
             engine: Mutex::new(MatchEngine::new(Thresholds::default())),
+            active_session: Mutex::new(SCRATCH_SESSION.to_string()),
             dirty: AtomicBool::new(false),
             mode2_inflight: AtomicBool::new(false),
             mode2_last_q: Mutex::new(String::new()),
@@ -106,6 +112,7 @@ pub fn feed_transcript_internal(
 
 #[tauri::command]
 pub fn reset_live(
+    app: tauri::AppHandle,
     live: tauri::State<'_, LiveState>,
     db: tauri::State<'_, crate::Db>,
 ) -> Result<(), String> {
@@ -119,22 +126,116 @@ pub fn reset_live(
     live.mode2_inflight.store(false, Ordering::SeqCst);
     live.mode2_epoch.fetch_add(1, Ordering::SeqCst);
     lock_or_recover(&live.mode2_last_q).clear();
-    // Clear the scratch session's live rows so a re-run doesn't accumulate
+    // Clear the ACTIVE session's live rows so a re-run doesn't accumulate
     // duplicate coverage/event rows (coverage is sticky in memory; the DB is
     // the record, and the engine reset just wiped the in-memory flags).
+    let session = lock_or_recover(&live.active_session).clone();
     let conn = db.conn.lock().unwrap_or_else(|p| p.into_inner());
     conn.execute(
         "DELETE FROM coverage WHERE session_id = ?1",
-        rusqlite::params![SCRATCH_SESSION],
+        rusqlite::params![session],
     )
     .map_err(|e| e.to_string())?;
     conn.execute(
         "DELETE FROM card_events WHERE session_id = ?1",
-        rusqlite::params![SCRATCH_SESSION],
+        rusqlite::params![session],
     )
     .map_err(|e| e.to_string())?;
     live.dirty.store(true, Ordering::SeqCst);
+    app.emit_to("overlay", "live:cleared", ()).ok();
     Ok(())
+}
+
+/// Bind the live loop to a real session: retrieval, coverage and card_events
+/// now scope to THIS session's own cards (02_ARCHITECTURE §5, 05_DATA_MODEL).
+/// Resets the windows + engine for a clean start and marks the session live.
+#[tauri::command]
+pub fn set_active_session(
+    app: tauri::AppHandle,
+    live: tauri::State<'_, LiveState>,
+    db: tauri::State<'_, crate::Db>,
+    session_id: String,
+) -> Result<(), String> {
+    if session_id == SCRATCH_SESSION {
+        return Err("not a real session".into());
+    }
+    {
+        let conn = db.conn.lock().map_err(|e| e.to_string())?;
+        let exists = conn
+            .query_row(
+                "SELECT 1 FROM sessions WHERE id = ?1",
+                params![session_id],
+                |_| Ok(()),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?
+            .is_some();
+        if !exists {
+            return Err("session not found".into());
+        }
+        conn.execute(
+            "UPDATE sessions SET status = 'live',
+                 started_at = COALESCE(started_at, strftime('%s','now'))
+             WHERE id = ?1",
+            params![session_id],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    reset_engine(&live);
+    *lock_or_recover(&live.active_session) = session_id;
+    live.dirty.store(true, Ordering::SeqCst);
+    app.emit_to("overlay", "live:cleared", ()).ok();
+    Ok(())
+}
+
+/// Stop the call: unbind from the session (revert to the scratch harness) and
+/// mark it planned again. The green/red close + coverage report is the next
+/// Phase-6 step; this is the plain "stop listening".
+#[tauri::command]
+pub fn clear_active_session(
+    app: tauri::AppHandle,
+    live: tauri::State<'_, LiveState>,
+    db: tauri::State<'_, crate::Db>,
+) -> Result<(), String> {
+    let prev = {
+        let mut a = lock_or_recover(&live.active_session);
+        let prev = a.clone();
+        *a = SCRATCH_SESSION.to_string();
+        prev
+    };
+    if prev != SCRATCH_SESSION {
+        let conn = db.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE sessions SET status = 'planned' WHERE id = ?1 AND status = 'live'",
+            params![prev],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    reset_engine(&live);
+    live.dirty.store(true, Ordering::SeqCst);
+    app.emit_to("overlay", "live:cleared", ()).ok();
+    Ok(())
+}
+
+/// The session the live loop is bound to right now (`scratch` = the dev harness,
+/// i.e. no real session live).
+#[tauri::command]
+pub fn get_active_session(live: tauri::State<'_, LiveState>) -> String {
+    lock_or_recover(&live.active_session).clone()
+}
+
+/// Fresh windows + engine + Mode-2 debounce — a clean slate for a new call.
+fn reset_engine(live: &LiveState) {
+    {
+        let mut w = lock_or_recover(&live.windows);
+        w.them.clear();
+        w.me.clear();
+        w.origin = Instant::now();
+    }
+    lock_or_recover(&live.engine).reset();
+    live.mode2_inflight.store(false, Ordering::SeqCst);
+    live.mode2_epoch.fetch_add(1, Ordering::SeqCst);
+    lock_or_recover(&live.mode2_last_q).clear();
 }
 
 #[tauri::command]
@@ -213,6 +314,8 @@ fn tick(app: &tauri::AppHandle) -> Result<(), String> {
     let live = app.state::<LiveState>();
     let embedder = app.state::<std::sync::Arc<crate::embed::Embedder>>();
     let db = app.state::<crate::Db>();
+    // The session this call is bound to — scopes retrieval, coverage and events.
+    let session = lock_or_recover(&live.active_session).clone();
 
     let (them_text, me_text) = {
         let w = lock_or_recover(&live.windows);
@@ -242,7 +345,13 @@ fn tick(app: &tauri::AppHandle) -> Result<(), String> {
     let mut jumped: Option<store::CardRow> = None;
 
     if let Some(qvec) = &them_vec {
-        let matches = search::query_cards_with_vec(&conn, qvec, &them_text)?;
+        // Scratch (dev harness) keeps the global, already-verified retrieval;
+        // a real session retrieves only against its own cards.
+        let matches = if session == SCRATCH_SESSION {
+            search::query_cards_with_vec(&conn, qvec, &them_text)?
+        } else {
+            search::query_cards_scoped(&conn, qvec, &them_text, &session)?
+        };
         // Score for the hysteresis thresholds is the REAL cosine similarity,
         // not the RRF rank score: RRF ranks are near-identical across the top
         // few cards (rank-1 in both legs ≈ 1.0 for everything), so a rank-based
@@ -312,7 +421,7 @@ fn tick(app: &tauri::AppHandle) -> Result<(), String> {
                            (session_id, card_id, ts_ms, mode, score, runner_up, runner_score, fused_rank)
                          VALUES (?1, ?2, ?3, 'retrieved', ?4, ?5, ?6, ?7)",
                         params![
-                            SCRATCH_SESSION,
+                            session.as_str(),
                             card.id,
                             ts_ms,
                             candidates.first().map(|c| c.score),
@@ -327,7 +436,7 @@ fn tick(app: &tauri::AppHandle) -> Result<(), String> {
             }
             Decision::NoConfidence => {
                 no_confidence = true;
-                maybe_assemble(app, &live, &conn, &them_text);
+                maybe_assemble(app, &live, &conn, &them_text, &session);
             }
             Decision::Stay => {}
         }
@@ -358,7 +467,7 @@ fn tick(app: &tauri::AppHandle) -> Result<(), String> {
                         conn.execute(
                             "INSERT INTO coverage (session_id, card_id, bullet_id, covered, score, ts_ms)
                              VALUES (?1, ?2, ?3, 1, NULL, ?4)",
-                            params![SCRATCH_SESSION, card_id, bullet_id, ts_ms],
+                            params![session.as_str(), card_id, bullet_id, ts_ms],
                         )
                         .map_err(|e| e.to_string())?;
                     }
@@ -417,6 +526,7 @@ fn maybe_assemble(
     live: &LiveState,
     conn: &rusqlite::Connection,
     question: &str,
+    session: &str,
 ) {
     let q = question.trim();
     if q.split_whitespace().count() < 3 {
@@ -446,8 +556,9 @@ fn maybe_assemble(
         )
         .unwrap_or_else(|_| "default".to_string());
 
-    // Gather the user's material (all prepared bullets) while we hold the lock.
-    let material = match gather_material(conn) {
+    // Gather the user's material (the session's cards, or all prepared bullets
+    // on the scratch dev path) while we hold the lock.
+    let material = match gather_material(conn, session) {
         Ok(m) => m,
         Err(e) => {
             tracing::warn!(error = %e, "mode2: gather material failed");
@@ -535,28 +646,43 @@ pub(crate) fn resolve_provider(
     })
 }
 
-fn gather_material(conn: &rusqlite::Connection) -> Result<crate::mode2::Material, String> {
+fn gather_material(
+    conn: &rusqlite::Connection,
+    session: &str,
+) -> Result<crate::mode2::Material, String> {
     // Bullets WITH their stored embeddings: assembly ranks them by relevance
     // to the question (prompt stays inside the local model's context however
     // big the corpus is) and the post-check reuses the vectors instead of
-    // re-embedding the whole corpus per fire (audit 2026-07-23).
-    let mut stmt = conn
-        .prepare(
-            "SELECT b.text, v.embedding FROM bullets b
-             JOIN cards c ON b.card_id = c.id
-             LEFT JOIN bullet_vec v ON v.bullet_id = b.id
-             WHERE c.source = 'prepared' ORDER BY c.created_at, b.position",
-        )
-        .map_err(|e| e.to_string())?;
-    let rows = stmt
-        .query_map([], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, Option<Vec<u8>>>(1)?))
-        })
-        .map_err(|e| e.to_string())?;
+    // re-embedding the whole corpus per fire (audit 2026-07-23). A real session
+    // grounds only in its own cards; the scratch dev path uses all prepared.
+    let sql = if session == SCRATCH_SESSION {
+        "SELECT b.text, v.embedding FROM bullets b
+         JOIN cards c ON b.card_id = c.id
+         LEFT JOIN bullet_vec v ON v.bullet_id = b.id
+         WHERE c.source = 'prepared' ORDER BY c.created_at, b.position"
+    } else {
+        "SELECT b.text, v.embedding FROM bullets b
+         JOIN cards c ON b.card_id = c.id
+         LEFT JOIN bullet_vec v ON v.bullet_id = b.id
+         WHERE c.session_id = ?1 ORDER BY c.created_at, b.position"
+    };
+    let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
+    let row_fn =
+        |r: &rusqlite::Row| Ok((r.get::<_, String>(0)?, r.get::<_, Option<Vec<u8>>>(1)?));
+    let rows: Vec<(String, Option<Vec<u8>>)> = if session == SCRATCH_SESSION {
+        stmt.query_map([], row_fn)
+            .map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok())
+            .collect()
+    } else {
+        stmt.query_map(params![session], row_fn)
+            .map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok())
+            .collect()
+    };
     let mut bullets = Vec::new();
     let mut vecs = Vec::new();
-    for row in rows.flatten() {
-        let (text, blob) = row;
+    for (text, blob) in rows {
         bullets.push(text);
         vecs.push(blob.map(|b| crate::embed::blob_to_vec(&b)));
     }

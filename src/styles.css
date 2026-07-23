@@ -168,6 +168,22 @@ body,
   filter: brightness(1.12);
 }
 
+/* The one always-on animation permitted outside the overlay (06_DESIGN): the
+   "live" session dot. A subtle opacity breath, no movement — disabled under
+   prefers-reduced-motion by the universal rule below. */
+@keyframes live-breath {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+.livePulse {
+  animation: live-breath 1.8s ease-in-out infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
   * {
     transition: none !important;

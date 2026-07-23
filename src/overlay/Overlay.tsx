@@ -144,10 +144,18 @@ export function Overlay() {
       setAssembled(assembledToCardData(e.payload));
       setAssembledKey((k) => k + 1);
     });
+    // Live loop reset / bound to a new session / stopped → back to waiting.
+    const unClear = listen("live:cleared", () => {
+      rowIdRef.current = null;
+      setRow(null);
+      setCovered([]);
+      setAssembled(null);
+    });
     return () => {
       unShow.then((f) => f()).catch(() => {});
       unCov.then((f) => f()).catch(() => {});
       unAsm.then((f) => f()).catch(() => {});
+      unClear.then((f) => f()).catch(() => {});
     };
   }, []);
 

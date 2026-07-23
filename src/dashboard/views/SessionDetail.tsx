@@ -36,6 +36,7 @@ export function SessionDetail({ session, onBack }: { session: SessionRow; onBack
   const [busy, setBusy] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
+  const [live, setLive] = useState(false);
 
   const refresh = useCallback(() => {
     invoke<CardRow[]>("list_session_cards", { sessionId: session.id })
@@ -46,7 +47,29 @@ export function SessionDetail({ session, onBack }: { session: SessionRow; onBack
   useEffect(() => {
     refresh();
     invoke<CardRow[]>("list_cards").then(setLibrary).catch(() => {});
-  }, [refresh]);
+    invoke<string>("get_active_session")
+      .then((id) => setLive(id === session.id))
+      .catch(() => {});
+  }, [refresh, session.id]);
+
+  const goLive = async () => {
+    setErr(null);
+    try {
+      await invoke("set_active_session", { sessionId: session.id });
+      setLive(true);
+    } catch (e) {
+      setErr(String(e));
+    }
+  };
+  const stopLive = async () => {
+    setErr(null);
+    try {
+      await invoke("clear_active_session");
+      setLive(false);
+    } catch (e) {
+      setErr(String(e));
+    }
+  };
 
   const addMaterial = async () => {
     if (!material.trim()) return;
@@ -110,6 +133,37 @@ export function SessionDetail({ session, onBack }: { session: SessionRow; onBack
         <p style={{ color: "var(--text-muted)", fontSize: 14, margin: "6px 0 0" }}>
           The cards you will lean on in this call. Pull from your library, or paste fresh material.
         </p>
+
+        <div style={{ marginTop: 14 }}>
+          {live ? (
+            <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 8, color: "var(--accent)", fontSize: 14, fontWeight: 600 }}>
+                <span className="livePulse" style={{ width: 9, height: 9, borderRadius: "50%", background: "var(--accent)" }} />
+                Live — your overlay is tracking this call
+              </span>
+              <button className="press" onClick={stopLive} style={btnGhost}>
+                Stop
+              </button>
+            </div>
+          ) : (
+            <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+              <button
+                className="press"
+                onClick={goLive}
+                disabled={cards.length === 0}
+                style={{ ...btn, opacity: cards.length === 0 ? 0.55 : 1 }}
+                title={cards.length === 0 ? "Add at least one card first" : undefined}
+              >
+                Go live
+              </button>
+              <span style={{ color: "var(--text-dim)", fontSize: 13 }}>
+                {cards.length === 0
+                  ? "Add at least one card first."
+                  : "Anchor will match only this session's cards as the call goes."}
+              </span>
+            </div>
+          )}
+        </div>
       </div>
 
       {err && (
