@@ -3,7 +3,7 @@
 //! you missed: "what you failed to say", the feature that makes the philosophy
 //! true in code). Pull cards from your library or paste fresh material.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { panel, btn, btnGhost, SectionTitle } from "../ui";
 import { PreflightAudio } from "../PreflightAudio";
@@ -65,6 +65,20 @@ export function SessionDetail({ session, onBack }: { session: SessionRow; onBack
 
   const closed = status === "closed_green" || status === "closed_red";
 
+  // Audio capture follows the session's live state, not any child component's
+  // mount. On leaving the view we stop capture ONLY if this session is not live
+  // — a live call must keep listening even when you switch dashboard tabs.
+  const liveRef = useRef(false);
+  useEffect(() => {
+    liveRef.current = live;
+  }, [live]);
+  useEffect(
+    () => () => {
+      if (!liveRef.current) invoke("stop_audio").catch(() => {});
+    },
+    [],
+  );
+
   const refresh = useCallback(() => {
     invoke<CardRow[]>("list_session_cards", { sessionId: session.id })
       .then(setCards)
@@ -89,6 +103,8 @@ export function SessionDetail({ session, onBack }: { session: SessionRow; onBack
     setErr(null);
     try {
       await invoke("set_active_session", { sessionId: session.id });
+      // Going live IS "start listening" — bind the session and start capture.
+      await invoke("start_audio").catch((e) => setErr(String(e)));
       setLive(true);
       setStatus("live");
     } catch (e) {
@@ -99,6 +115,7 @@ export function SessionDetail({ session, onBack }: { session: SessionRow; onBack
     setErr(null);
     try {
       await invoke("clear_active_session");
+      await invoke("stop_audio").catch(() => {});
       setLive(false);
       setStatus("planned");
     } catch (e) {
@@ -109,6 +126,7 @@ export function SessionDetail({ session, onBack }: { session: SessionRow; onBack
     setErr(null);
     try {
       const r = await invoke<Report>("close_session", { sessionId: session.id });
+      await invoke("stop_audio").catch(() => {});
       setReport(r);
       setLive(false);
       setStatus(r.verdict === "green" ? "closed_green" : "closed_red");
@@ -290,7 +308,7 @@ export function SessionDetail({ session, onBack }: { session: SessionRow; onBack
             </div>
           )}
 
-          <PreflightAudio />
+          {!live && <PreflightAudio />}
 
           {/* Pre-flight research → context card */}
           <section style={{ ...panel, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>

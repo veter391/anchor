@@ -51,7 +51,9 @@ export function PreflightAudio() {
     return () => {
       unH.then((f) => f()).catch(() => {});
       unP.then((f) => f()).catch(() => {});
-      invoke("stop_audio").catch(() => {}); // never leave capture running when we unmount
+      // Audio lifecycle is owned by SessionDetail (it stops capture on leaving a
+      // non-live session), so we must NOT stop here — unmounting on "Go live"
+      // would kill the call we just started.
     };
   }, []);
 

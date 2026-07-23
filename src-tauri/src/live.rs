@@ -179,6 +179,7 @@ pub fn set_active_session(
     if session_id == SCRATCH_SESSION {
         return Err("not a real session".into());
     }
+    let prev = lock_or_recover(&live.active_session).clone();
     {
         let conn = db.conn.lock().map_err(|e| e.to_string())?;
         let exists = conn
@@ -192,6 +193,15 @@ pub fn set_active_session(
             .is_some();
         if !exists {
             return Err("session not found".into());
+        }
+        // Going live on a new session demotes a previously-live one back to
+        // planned (no session is left stuck showing the live dot forever).
+        if prev != SCRATCH_SESSION && prev != session_id {
+            conn.execute(
+                "UPDATE sessions SET status = 'planned' WHERE id = ?1 AND status = 'live'",
+                params![prev],
+            )
+            .map_err(|e| e.to_string())?;
         }
         conn.execute(
             "UPDATE sessions SET status = 'live',
@@ -556,8 +566,15 @@ fn tick(app: &tauri::AppHandle) -> Result<(), String> {
                 for ((bullet_id, _), flag) in bullets.iter().zip(&covered) {
                     if *flag {
                         conn.execute(
+                            // Coverage is sticky; update_coverage returns the full
+                            // flag vector, so guard against re-inserting a bullet
+                            // that is already marked covered (no duplicate rows).
                             "INSERT INTO coverage (session_id, card_id, bullet_id, covered, score, ts_ms)
-                             VALUES (?1, ?2, ?3, 1, NULL, ?4)",
+                             SELECT ?1, ?2, ?3, 1, NULL, ?4
+                             WHERE NOT EXISTS (
+                               SELECT 1 FROM coverage
+                               WHERE session_id = ?1 AND bullet_id = ?3 AND covered = 1
+                             )",
                             params![session.as_str(), card_id, bullet_id, ts_ms],
                         )
                         .map_err(|e| e.to_string())?;
