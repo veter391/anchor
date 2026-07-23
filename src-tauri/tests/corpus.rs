@@ -7,7 +7,7 @@ use anchor::cards::parse_markdown;
 use anchor::db;
 use anchor::embed::{Embedder, DIMS, MODEL_ID};
 use anchor::search::{embed_query_text, query_cards, query_cards_scoped};
-use anchor::store::{get_card, import_cards, list_cards, list_session_cards};
+use anchor::store::{coverage_report, get_card, import_cards, list_cards, list_session_cards};
 use std::collections::HashSet;
 
 const CORPUS: &str = r#"
@@ -212,4 +212,65 @@ fn session_scoped_query_only_returns_session_cards() {
         "s2 surfaces its salary card, got {:?}",
         s2top.title
     );
+}
+
+/// The coverage report is the Phase-6 DoD: it counts only the cards that came
+/// up during the call, marks each anchor hit/missed, and scores green/red.
+#[test]
+fn coverage_report_counts_only_cards_that_came_up() {
+    let (mut conn, embedder) = setup();
+    conn.execute(
+        "INSERT INTO sessions (id, title, kind, status, language, created_at)
+         VALUES ('r1', 'Report', 'other', 'planned', 'en', 0)",
+        [],
+    )
+    .unwrap();
+    import_cards(&mut conn, &embedder, parse_markdown(S1_CARDS, "en"), Some("r1")).unwrap();
+    // S1_CARDS = kubernetes (2 bullets) + leaving (2 bullets), both owned by r1.
+    let cards = list_session_cards(&conn, "r1").unwrap();
+    let kube = cards.iter().find(|c| c.title.contains("Kubernetes")).unwrap();
+    let bullet_ids: Vec<String> = {
+        let mut stmt = conn
+            .prepare("SELECT id FROM bullets WHERE card_id = ?1 ORDER BY position")
+            .unwrap();
+        stmt.query_map(rusqlite::params![kube.id], |r| r.get::<_, String>(0))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect()
+    };
+    assert_eq!(bullet_ids.len(), 2);
+
+    // Simulate a call: only the kubernetes card came up; 1 of its 2 anchors hit.
+    conn.execute(
+        "INSERT INTO card_events (session_id, card_id, ts_ms, mode)
+         VALUES ('r1', ?1, 0, 'retrieved')",
+        rusqlite::params![kube.id],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO coverage (session_id, card_id, bullet_id, covered)
+         VALUES ('r1', ?1, ?2, 1)",
+        rusqlite::params![kube.id, bullet_ids[0]],
+    )
+    .unwrap();
+
+    let rep = coverage_report(&conn, "r1").unwrap();
+    let up: Vec<_> = rep.cards.iter().filter(|c| c.came_up).collect();
+    assert_eq!(up.len(), 1, "only the kubernetes card came up");
+    assert!(up[0].title.contains("Kubernetes"));
+    assert_eq!(rep.total, 2, "denominator is only the came-up card's anchors");
+    assert_eq!(rep.covered, 1);
+    assert_eq!(rep.untouched_cards, 1, "the leaving card never came up");
+    assert_eq!(rep.verdict, "red", "1 of 2 = 50% < 70% floor");
+
+    // Cover the second anchor → green.
+    conn.execute(
+        "INSERT INTO coverage (session_id, card_id, bullet_id, covered)
+         VALUES ('r1', ?1, ?2, 1)",
+        rusqlite::params![kube.id, bullet_ids[1]],
+    )
+    .unwrap();
+    let rep2 = coverage_report(&conn, "r1").unwrap();
+    assert_eq!(rep2.covered, 2);
+    assert_eq!(rep2.verdict, "green", "2 of 2 = 100% >= 70% floor");
 }

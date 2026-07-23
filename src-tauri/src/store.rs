@@ -541,6 +541,135 @@ pub fn card_vectors_for_session(
     Ok(out)
 }
 
+// ── Coverage report (Phase 6: "what you failed to say") ─────────────
+
+#[derive(Serialize)]
+pub struct BulletCoverage {
+    pub text: String,
+    pub covered: bool,
+}
+#[derive(Serialize)]
+pub struct CardCoverage {
+    pub card_id: String,
+    pub title: String,
+    /// Whether this card actually surfaced during the call (had a card_event
+    /// or a covered bullet). A card that never came up is not a "miss".
+    pub came_up: bool,
+    pub bullets: Vec<BulletCoverage>,
+    pub covered: usize,
+    pub total: usize,
+}
+#[derive(Serialize)]
+pub struct CoverageReport {
+    pub cards: Vec<CardCoverage>,
+    /// Anchors covered / total, counted ONLY over cards that came up — the
+    /// honest denominator (topics that never arose are not failures).
+    pub covered: usize,
+    pub total: usize,
+    pub verdict: String, // "green" | "red"
+    pub untouched_cards: usize,
+}
+
+/// A session went "green" when the user covered this share of the anchors on
+/// the cards that actually came up.
+pub const COVERAGE_GREEN_FLOOR: f64 = 0.7;
+
+/// Builds the post-call coverage report for a session: per card, which anchors
+/// were hit vs missed, and a green/red verdict over the cards that came up.
+pub fn coverage_report(conn: &Connection, session_id: &str) -> Result<CoverageReport, String> {
+    let covered: std::collections::HashSet<String> = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT DISTINCT bullet_id FROM coverage
+                 WHERE session_id = ?1 AND covered = 1 AND bullet_id IS NOT NULL",
+            )
+            .map_err(|e| e.to_string())?;
+        let ids = stmt
+            .query_map(params![session_id], |r| r.get::<_, String>(0))
+            .map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok())
+            .collect();
+        ids
+    };
+    // Cards that surfaced during the call: a jump was logged, or a bullet covered.
+    let came_up: std::collections::HashSet<String> = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT card_id FROM card_events WHERE session_id = ?1
+                 UNION
+                 SELECT card_id FROM coverage WHERE session_id = ?1 AND covered = 1",
+            )
+            .map_err(|e| e.to_string())?;
+        let ids = stmt
+            .query_map(params![session_id], |r| r.get::<_, String>(0))
+            .map_err(|e| e.to_string())?
+            .filter_map(|r| r.ok())
+            .collect();
+        ids
+    };
+    let mut stmt = conn
+        .prepare(
+            "SELECT c.id, c.title, b.id, b.text
+             FROM cards c JOIN bullets b ON b.card_id = c.id
+             WHERE c.session_id = ?1
+             ORDER BY c.created_at, c.id, b.position",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows: Vec<(String, String, String, String)> = stmt
+        .query_map(params![session_id], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+        })
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    let mut cards: Vec<CardCoverage> = Vec::new();
+    let mut untouched = 0usize;
+    for (cid, title, bid, text) in rows {
+        if cards.last().map(|c| c.card_id.as_str()) != Some(cid.as_str()) {
+            let is_up = came_up.contains(&cid);
+            if !is_up {
+                untouched += 1;
+            }
+            cards.push(CardCoverage {
+                card_id: cid.clone(),
+                title,
+                came_up: is_up,
+                bullets: Vec::new(),
+                covered: 0,
+                total: 0,
+            });
+        }
+        let card = cards.last_mut().unwrap();
+        let hit = covered.contains(&bid);
+        card.bullets.push(BulletCoverage { text, covered: hit });
+        card.total += 1;
+        if hit {
+            card.covered += 1;
+        }
+    }
+
+    let (mut total, mut cov) = (0usize, 0usize);
+    for c in &cards {
+        if c.came_up {
+            total += c.total;
+            cov += c.covered;
+        }
+    }
+    let verdict = if total > 0 && (cov as f64) >= (total as f64) * COVERAGE_GREEN_FLOOR {
+        "green"
+    } else {
+        "red"
+    };
+    Ok(CoverageReport {
+        cards,
+        covered: cov,
+        total,
+        verdict: verdict.to_string(),
+        untouched_cards: untouched,
+    })
+}
+
 /// Deletes one card; bullets cascade via FK, derived FTS/vec rows via triggers.
 pub fn delete_card(conn: &Connection, card_id: &str) -> Result<(), String> {
     conn.execute("DELETE FROM cards WHERE id = ?1", params![card_id])

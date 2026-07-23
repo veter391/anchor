@@ -238,6 +238,77 @@ fn reset_engine(live: &LiveState) {
     lock_or_recover(&live.mode2_last_q).clear();
 }
 
+/// End the call: build the coverage report ("what you failed to say"), mark the
+/// session closed green/red, and unbind the live loop if it was this session.
+#[tauri::command]
+pub fn close_session(
+    app: tauri::AppHandle,
+    live: tauri::State<'_, LiveState>,
+    db: tauri::State<'_, crate::Db>,
+    session_id: String,
+) -> Result<store::CoverageReport, String> {
+    let report = {
+        let conn = db.conn.lock().map_err(|e| e.to_string())?;
+        let report = store::coverage_report(&conn, &session_id)?;
+        let status = if report.verdict == "green" {
+            "closed_green"
+        } else {
+            "closed_red"
+        };
+        conn.execute(
+            "UPDATE sessions SET status = ?2, closed_at = strftime('%s','now') WHERE id = ?1",
+            params![session_id, status],
+        )
+        .map_err(|e| e.to_string())?;
+        report
+    };
+    // If the call we're ending is the live one, unbind and clear the overlay.
+    let was_active = *lock_or_recover(&live.active_session) == session_id;
+    if was_active {
+        *lock_or_recover(&live.active_session) = SCRATCH_SESSION.to_string();
+        reset_engine(&live);
+        live.dirty.store(true, Ordering::SeqCst);
+        app.emit_to("overlay", "live:cleared", ()).ok();
+    }
+    Ok(report)
+}
+
+/// Read-only coverage report for a session (to view a closed session later).
+#[tauri::command]
+pub fn session_report(
+    db: tauri::State<'_, crate::Db>,
+    session_id: String,
+) -> Result<store::CoverageReport, String> {
+    let conn = db.conn.lock().map_err(|e| e.to_string())?;
+    store::coverage_report(&conn, &session_id)
+}
+
+/// Reopen a closed session for another run: back to planned, old coverage and
+/// events wiped so the next call's report starts clean.
+#[tauri::command]
+pub fn reopen_session(
+    db: tauri::State<'_, crate::Db>,
+    session_id: String,
+) -> Result<(), String> {
+    let conn = db.conn.lock().map_err(|e| e.to_string())?;
+    conn.execute(
+        "UPDATE sessions SET status = 'planned', closed_at = NULL WHERE id = ?1",
+        params![session_id],
+    )
+    .map_err(|e| e.to_string())?;
+    conn.execute(
+        "DELETE FROM coverage WHERE session_id = ?1",
+        params![session_id],
+    )
+    .map_err(|e| e.to_string())?;
+    conn.execute(
+        "DELETE FROM card_events WHERE session_id = ?1",
+        params![session_id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 #[tauri::command]
 pub fn set_thresholds(live: tauri::State<'_, LiveState>, thresholds: Thresholds) {
     lock_or_recover(&live.engine).thresholds = thresholds;
