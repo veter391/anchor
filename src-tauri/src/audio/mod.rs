@@ -191,8 +191,10 @@ fn worker_loop(
     them_seen: Arc<AtomicU64>,
     me_seen: Arc<AtomicU64>,
 ) {
-    let mut them = asr.new_channel();
-    let mut me = asr.new_channel();
+    // "auto" lets the multilingual model detect the spoken language per channel;
+    // a per-session language override is threaded in the next step.
+    let mut them = asr.new_channel("auto");
+    let mut me = asr.new_channel("auto");
     let origin = Instant::now();
     // Recent "them" finals, for the speaker-echo filter (see below).
     let mut recent_them: std::collections::VecDeque<(u64, String)> = std::collections::VecDeque::new();

@@ -67,9 +67,17 @@ impl Asr {
         Ok(Self { recognizer })
     }
 
-    pub fn new_channel(&self) -> ChannelStream {
+    /// A per-channel stream. `language` steers the multilingual model — an ISO
+    /// code like "en"/"de"/"ru", or "auto"/"" for auto-detection (the model
+    /// picks the language from the audio). Ignored by the EN-only fallback model.
+    pub fn new_channel(&self, language: &str) -> ChannelStream {
+        let stream = self.recognizer.create_stream();
+        let lang = language.trim();
+        if !lang.is_empty() && lang != "auto" {
+            stream.set_option("language", lang);
+        }
         ChannelStream {
-            stream: self.recognizer.create_stream(),
+            stream,
             last_pending: String::new(),
         }
     }
@@ -107,27 +115,35 @@ impl Asr {
 
 /// Model directory resolution, in priority order:
 /// 1. `ANCHOR_ASR_MODEL_DIR` env (dev / power users)
-/// 2. `<app_data>/models/<default name>` (first-run download target, Phase 8)
-/// 3. the Phase-0 spike model, so dev works today without a downloader
+/// 2. `<app_data>/models/<name>` (first-run download target, Phase 8)
+/// 3. the Phase-0 spike dir, so dev works today without a downloader
+///
+/// Preferred model is the MULTILINGUAL Nemotron 3.5 (EN/ES/RU/UK/DE + more, with
+/// per-stream language selection / auto-detect — Phase 7). The EN-only spike
+/// model is kept as a fallback so dev never breaks while the new one downloads.
+pub const ASR_MODEL_MULTILINGUAL: &str =
+    "sherpa-onnx-nemotron-3.5-asr-streaming-0.6b-320ms-int8-2026-06-11";
+pub const ASR_MODEL_EN: &str = "sherpa-onnx-nemotron-speech-streaming-en-0.6b-int8-2026-01-14";
+
 pub fn model_dir(app_data: &Path) -> Option<PathBuf> {
-    const DEFAULT: &str = "sherpa-onnx-nemotron-speech-streaming-en-0.6b-int8-2026-01-14";
+    // 1. Explicit override wins.
     if let Ok(p) = std::env::var("ANCHOR_ASR_MODEL_DIR") {
         let p = PathBuf::from(p);
         if p.join("encoder.int8.onnx").exists() {
             return Some(p);
         }
     }
-    let installed = app_data.join("models").join(DEFAULT);
-    if installed.join("encoder.int8.onnx").exists() {
-        return Some(installed);
-    }
-    // Dev fallback: the spike model checked in under the repo's ignored spike/.
-    for up in ["..", "../..", "../../.."] {
-        let candidate = Path::new(up)
-            .join("spike/audio/models")
-            .join(DEFAULT);
-        if candidate.join("encoder.int8.onnx").exists() {
-            return std::fs::canonicalize(candidate).ok();
+    // 2/3. Installed (portable data), then the dev spike dir — multilingual first.
+    for name in [ASR_MODEL_MULTILINGUAL, ASR_MODEL_EN] {
+        let installed = app_data.join("models").join(name);
+        if installed.join("encoder.int8.onnx").exists() {
+            return Some(installed);
+        }
+        for up in ["..", "../..", "../../.."] {
+            let candidate = Path::new(up).join("spike/audio/models").join(name);
+            if candidate.join("encoder.int8.onnx").exists() {
+                return std::fs::canonicalize(candidate).ok();
+            }
         }
     }
     None
