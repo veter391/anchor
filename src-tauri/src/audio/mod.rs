@@ -2,6 +2,7 @@
 //! `feed_transcript` path the Phase-3 transcript player used. Their speech
 //! drives card selection; your speech drives coverage.
 
+pub mod aec;
 pub mod asr;
 pub mod capture;
 
@@ -219,6 +220,10 @@ fn worker_loop(
     let origin = Instant::now();
     // Recent "them" finals, for the speaker-echo filter (see below).
     let mut recent_them: std::collections::VecDeque<(u64, String)> = std::collections::VecDeque::new();
+    // Signal-level AEC: "them" is the time-aligned reference; "me" is cleaned
+    // before ASR so the far side's voice (heard from open speakers) is not
+    // transcribed on the mic. Harmless with headphones (no echo to cancel).
+    let mut echo_canceller = aec::EchoCanceller::new();
 
     while !stop.load(std::sync::atomic::Ordering::SeqCst) {
         let chunk = match rx.recv_timeout(std::time::Duration::from_millis(250)) {
@@ -227,16 +232,32 @@ fn worker_loop(
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
         };
         let now_ms = origin.elapsed().as_millis() as u64;
+        // Liveness uses the RAW device audio (is it delivering anything at all),
+        // before AEC — the cancelled mic can be near-silent when it's all echo.
+        let raw_alive = chunk.samples.iter().any(|s| s.abs() > 1e-4);
+        // AEC: buffer "them" as the reference; clean "me" against it.
+        if chunk.channel == Channel::Them {
+            echo_canceller.push_reference(chunk.ts_us, &chunk.samples);
+        }
+        let me_cleaned = match chunk.channel {
+            Channel::Me => Some(echo_canceller.push_mic(chunk.ts_us, &chunk.samples)),
+            Channel::Them => None,
+        };
         let (speaker, ch, seen) = match chunk.channel {
             Channel::Them => ("them", &mut them, &them_seen),
             Channel::Me => ("me", &mut me, &me_seen),
         };
-        // Only non-trivial audio counts as "alive" (loopback emits tiny
-        // silent frames on some endpoints).
-        if chunk.samples.iter().any(|s| s.abs() > 1e-4) {
+        if raw_alive {
             seen.store(now_ms.max(1), Ordering::SeqCst);
         }
-        let emit = asr.feed(ch, chunk.sample_rate, &chunk.samples);
+        let samples: &[f32] = match &me_cleaned {
+            Some(cleaned) => cleaned, // echo-cancelled mic (may be empty until a frame + lag is buffered)
+            None => &chunk.samples,   // "them" loopback, fed raw
+        };
+        if samples.is_empty() {
+            continue; // mic frame not ready yet — held in the canceller
+        }
+        let emit = asr.feed(ch, chunk.sample_rate, samples);
         match emit {
             Emit::Final(text) => {
                 if speaker == "them" {

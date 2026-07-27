@@ -34,6 +34,12 @@ keyring = "4"
 # Audio (Phase 4). sherpa-onnx as a DLL so its bundled ONNX Runtime does not
 # clash with fastembed's static `ort` (LNK2005 otherwise — proven in Phase 0).
 sherpa-onnx = { version = "1.13.4", default-features = false, features = ["shared"] }
+# Signal-level AEC (speexdsp, vendored + built via cmake). On open speakers the
+# mic hears the far end out loud; we hold that side as the loopback "them"
+# reference, time-align it (audio/aec.rs), and subtract it so "me" is the user
+# only. Windows OS AEC was measured useless for our topology (far end is
+# rendered by another process) — see 10_RESEARCH_LOG. MIT + speexdsp BSD.
+aec-rs = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 

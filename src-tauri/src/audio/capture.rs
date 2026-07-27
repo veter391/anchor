@@ -11,6 +11,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
+use std::time::Instant;
 
 pub const RATE: i32 = 16_000;
 
@@ -24,6 +25,11 @@ pub struct AudioChunk {
     pub channel: Channel,
     pub sample_rate: i32,
     pub samples: Vec<f32>,
+    /// Microseconds since a shared capture origin, stamped when the chunk was
+    /// drained. Both channels share the origin, so their timestamps sit on one
+    /// timeline — the AEC reference aligner (audio/aec.rs) needs this to place
+    /// the intermittent "them" loopback against the continuous mic.
+    pub ts_us: u64,
 }
 
 pub struct CaptureHandles {
@@ -45,6 +51,8 @@ pub fn start(tx: Sender<AudioChunk>) -> Result<CaptureHandles, String> {
     use wasapi::Direction;
     let stop = Arc::new(AtomicBool::new(false));
     let mut threads = Vec::new();
+    // One origin shared by both threads → their chunk timestamps share a timeline.
+    let origin = Instant::now();
 
     for (channel, direction) in [
         (Channel::Them, Direction::Render), // render endpoint → loopback
@@ -53,7 +61,7 @@ pub fn start(tx: Sender<AudioChunk>) -> Result<CaptureHandles, String> {
         let stop = stop.clone();
         let tx = tx.clone();
         threads.push(std::thread::spawn(move || {
-            if let Err(e) = capture_loop(channel, direction, &stop, &tx) {
+            if let Err(e) = capture_loop(channel, direction, &stop, &tx, origin) {
                 tracing::warn!(?channel, error = %e, "capture thread stopped");
             }
         }));
@@ -94,12 +102,13 @@ fn capture_loop(
     direction: wasapi::Direction,
     stop: &AtomicBool,
     tx: &Sender<AudioChunk>,
+    origin: Instant,
 ) -> Result<(), String> {
     use wasapi::initialize_mta;
 
     let _ = initialize_mta();
     while !stop.load(Ordering::SeqCst) {
-        match run_stream_once(channel, &direction, stop, tx) {
+        match run_stream_once(channel, &direction, stop, tx, origin) {
             Ok(StreamExit::Stopped) => break,
             Ok(StreamExit::DeviceChanged) => {
                 tracing::info!(?channel, "audio default device changed — rebuilding capture");
@@ -126,6 +135,7 @@ fn run_stream_once(
     direction: &wasapi::Direction,
     stop: &AtomicBool,
     tx: &Sender<AudioChunk>,
+    origin: Instant,
 ) -> Result<StreamExit, String> {
     use std::collections::VecDeque;
     use wasapi::*;
@@ -175,6 +185,7 @@ fn run_stream_once(
                 .send(AudioChunk {
                     channel,
                     sample_rate: RATE,
+                    ts_us: origin.elapsed().as_micros() as u64,
                     samples,
                 })
                 .is_err()
