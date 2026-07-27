@@ -25,6 +25,17 @@ const KINDS = [
   { key: "other", label: "Other" },
 ];
 
+// The expected speech language, used to steer the on-device transcription.
+// "Auto-detect" lets the multilingual model decide — the safe default. The
+// launch languages are the ones we tune and benchmark (04_MODELS).
+const LANGS = [
+  { key: "auto", label: "Auto-detect" },
+  { key: "en", label: "English" },
+  { key: "es", label: "Spanish" },
+  { key: "ru", label: "Russian" },
+  { key: "uk", label: "Ukrainian" },
+];
+
 const STATUS_DOT: Record<string, string> = {
   planned: "var(--text-dim)",
   live: "var(--accent)",
@@ -38,6 +49,7 @@ export function Sessions() {
   const [creating, setCreating] = useState(false);
   const [title, setTitle] = useState("");
   const [kind, setKind] = useState("interview");
+  const [language, setLanguage] = useState("auto");
   const [err, setErr] = useState<string | null>(null);
   const [open, setOpenId] = useState<string | null>(null);
 
@@ -48,7 +60,7 @@ export function Sessions() {
 
   const create = async () => {
     try {
-      await invoke<string>("create_session", { title, kind });
+      await invoke<string>("create_session", { title, kind, language });
       setTitle("");
       setCreating(false);
       refresh();
@@ -134,6 +146,24 @@ export function Sessions() {
               {KINDS.map((k) => (
                 <option key={k.key} value={k.key}>
                   {k.label.replace(/s$/, "")}
+                </option>
+              ))}
+            </select>
+            <select
+              value={language}
+              onChange={(e) => setLanguage(e.target.value)}
+              title="The language you expect to be spoken on the call"
+              style={{
+                background: "var(--bg-elevated)",
+                color: "var(--text)",
+                border: "1px solid var(--border)",
+                borderRadius: 8,
+                padding: "10px 12px",
+              }}
+            >
+              {LANGS.map((l) => (
+                <option key={l.key} value={l.key}>
+                  {l.label}
                 </option>
               ))}
             </select>

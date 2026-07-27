@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 
 /// A "them" channel that stays silent this long while listening is almost
 /// always a wrong/dead output endpoint — the classic earbuds/loopback trap.
@@ -83,6 +83,23 @@ pub fn audio_status(audio: tauri::State<'_, AudioState>) -> bool {
     audio.running.lock().map(|g| g.is_some()).unwrap_or(false)
 }
 
+/// The ASR language for this call, from the active session's `sessions.language`.
+/// Scratch (no real session) or a blank/unknown value → "auto" (the multilingual
+/// model detects the language itself). A DB-lock failure also degrades to "auto"
+/// rather than blocking the call.
+fn call_language(app: &tauri::AppHandle) -> String {
+    let session = app.state::<crate::live::LiveState>().active_session_id();
+    if session == crate::live::SCRATCH_SESSION {
+        return "auto".to_string();
+    }
+    app.state::<crate::Db>()
+        .conn
+        .lock()
+        .ok()
+        .and_then(|conn| crate::store::session_language(&conn, &session))
+        .unwrap_or_else(|| "auto".to_string())
+}
+
 #[tauri::command]
 pub fn start_audio(app: tauri::AppHandle, audio: tauri::State<'_, AudioState>) -> Result<(), String> {
     // Cheap running-check without holding the lock across the model load.
@@ -101,6 +118,9 @@ pub fn start_audio(app: tauri::AppHandle, audio: tauri::State<'_, AudioState>) -
         .unwrap_or(4)
         .min(8);
     let asr = Asr::load(&model_dir, threads)?;
+    // Steer the multilingual model with the active session's expected language.
+    let language = call_language(&app);
+    tracing::info!(language = %language, "resolved ASR language for the call");
 
     let mut guard = audio.running.lock().map_err(|e| e.to_string())?;
     if guard.is_some() {
@@ -119,7 +139,7 @@ pub fn start_audio(app: tauri::AppHandle, audio: tauri::State<'_, AudioState>) -
         let stop = stop_worker.clone();
         let them_seen = them_seen.clone();
         let me_seen = me_seen.clone();
-        std::thread::spawn(move || worker_loop(app, asr, rx, stop, them_seen, me_seen))
+        std::thread::spawn(move || worker_loop(app, asr, language, rx, stop, them_seen, me_seen))
     };
     // Health watchdog: warns when a channel goes quiet (wrong endpoint / earbuds).
     let health = {
@@ -186,15 +206,16 @@ pub fn stop_audio(app: tauri::AppHandle, audio: tauri::State<'_, AudioState>) ->
 fn worker_loop(
     app: tauri::AppHandle,
     asr: Asr,
+    language: String,
     rx: Receiver<AudioChunk>,
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
     them_seen: Arc<AtomicU64>,
     me_seen: Arc<AtomicU64>,
 ) {
-    // "auto" lets the multilingual model detect the spoken language per channel;
-    // a per-session language override is threaded in the next step.
-    let mut them = asr.new_channel("auto");
-    let mut me = asr.new_channel("auto");
+    // Both channels of a call share the session's language; "auto" (scratch /
+    // no session) lets the multilingual model detect it per channel.
+    let mut them = asr.new_channel(&language);
+    let mut me = asr.new_channel(&language);
     let origin = Instant::now();
     // Recent "them" finals, for the speaker-echo filter (see below).
     let mut recent_them: std::collections::VecDeque<(u64, String)> = std::collections::VecDeque::new();

@@ -254,6 +254,14 @@ pub fn get_active_session(live: tauri::State<'_, LiveState>) -> String {
     lock_or_recover(&live.active_session).clone()
 }
 
+impl LiveState {
+    /// The active session id, for non-command callers (e.g. the audio worker
+    /// resolving the session's ASR language). `scratch` = no real session.
+    pub fn active_session_id(&self) -> String {
+        lock_or_recover(&self.active_session).clone()
+    }
+}
+
 /// Fresh windows + engine + Mode-2 debounce — a clean slate for a new call.
 fn reset_engine(live: &LiveState) {
     {

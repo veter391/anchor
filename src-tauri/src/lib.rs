@@ -439,12 +439,21 @@ fn create_session(
         "interview" | "client" | "team" | "investor" | "other" => kind,
         _ => "other".into(),
     };
+    // Whitelist to the launch languages (+ auto). Anything else degrades to
+    // auto-detect rather than reaching the ASR's per-stream option raw.
+    let language = match language.as_deref().map(str::trim) {
+        Some("en") => "en",
+        Some("es") => "es",
+        Some("ru") => "ru",
+        Some("uk") => "uk",
+        _ => "auto",
+    };
     let id = uuid::Uuid::new_v4().to_string();
     let conn = db.conn.lock().map_err(|e| e.to_string())?;
     conn.execute(
         "INSERT INTO sessions (id, title, kind, status, language, created_at)
          VALUES (?1, ?2, ?3, 'planned', ?4, strftime('%s','now'))",
-        params![id, title, kind, language.unwrap_or_else(|| "en".into())],
+        params![id, title, kind, language],
     )
     .map_err(|e| e.to_string())?;
     Ok(id)

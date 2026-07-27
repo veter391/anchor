@@ -205,6 +205,22 @@ pub fn list_session_cards(conn: &Connection, session_id: &str) -> Result<Vec<Car
     rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
 }
 
+/// The session's expected speech language (ISO code, e.g. "en"/"de"), used to
+/// steer the multilingual ASR. `None` if the session is unknown or stored blank
+/// — the caller then falls back to auto-detect.
+pub fn session_language(conn: &Connection, session_id: &str) -> Option<String> {
+    conn.query_row(
+        "SELECT language FROM sessions WHERE id = ?1",
+        params![session_id],
+        |r| r.get::<_, String>(0),
+    )
+    .optional()
+    .ok()
+    .flatten()
+    .map(|s| s.trim().to_string())
+    .filter(|s| !s.is_empty())
+}
+
 /// One bullet's stored row while copying: (id, position, text, short, long, provenance).
 type BulletCopyRow = (String, i64, String, Option<String>, Option<String>, String);
 
@@ -711,4 +727,23 @@ pub fn wipe_corpus(conn: &Connection) -> Result<(), String> {
          DELETE FROM bullets; DELETE FROM cards;",
     )
     .map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn session_language_reads_trimmed_nonblank_or_none() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE sessions (id TEXT PRIMARY KEY, language TEXT NOT NULL);
+             INSERT INTO sessions VALUES ('s1','es'), ('s2',''), ('s3','  uk  ');",
+        )
+        .unwrap();
+        assert_eq!(session_language(&conn, "s1").as_deref(), Some("es"));
+        assert_eq!(session_language(&conn, "s3").as_deref(), Some("uk")); // trimmed
+        assert_eq!(session_language(&conn, "s2"), None); // blank → auto-detect
+        assert_eq!(session_language(&conn, "missing"), None); // unknown session
+    }
 }
