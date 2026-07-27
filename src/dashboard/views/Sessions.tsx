@@ -34,6 +34,7 @@ const LANGS = [
   { key: "es", label: "Spanish" },
   { key: "ru", label: "Russian" },
   { key: "uk", label: "Ukrainian" },
+  { key: "de", label: "German" },
 ];
 
 const STATUS_DOT: Record<string, string> = {

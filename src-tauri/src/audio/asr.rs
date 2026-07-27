@@ -125,26 +125,30 @@ pub const ASR_MODEL_MULTILINGUAL: &str =
     "sherpa-onnx-nemotron-3.5-asr-streaming-0.6b-320ms-int8-2026-06-11";
 pub const ASR_MODEL_EN: &str = "sherpa-onnx-nemotron-speech-streaming-en-0.6b-int8-2026-01-14";
 
+/// Resolve one named model: installed (portable data), then the dev spike dir.
+pub fn model_dir_named(app_data: &Path, name: &str) -> Option<PathBuf> {
+    let installed = app_data.join("models").join(name);
+    if installed.join("encoder.int8.onnx").exists() {
+        return Some(installed);
+    }
+    for up in ["..", "../..", "../../.."] {
+        let candidate = Path::new(up).join("spike/audio/models").join(name);
+        if candidate.join("encoder.int8.onnx").exists() {
+            return std::fs::canonicalize(candidate).ok();
+        }
+    }
+    None
+}
+
+/// Auto streaming model: explicit `ANCHOR_ASR_MODEL_DIR` override, then the
+/// multilingual model, then the EN-only model as a last resort.
 pub fn model_dir(app_data: &Path) -> Option<PathBuf> {
-    // 1. Explicit override wins.
     if let Ok(p) = std::env::var("ANCHOR_ASR_MODEL_DIR") {
         let p = PathBuf::from(p);
         if p.join("encoder.int8.onnx").exists() {
             return Some(p);
         }
     }
-    // 2/3. Installed (portable data), then the dev spike dir — multilingual first.
-    for name in [ASR_MODEL_MULTILINGUAL, ASR_MODEL_EN] {
-        let installed = app_data.join("models").join(name);
-        if installed.join("encoder.int8.onnx").exists() {
-            return Some(installed);
-        }
-        for up in ["..", "../..", "../../.."] {
-            let candidate = Path::new(up).join("spike/audio/models").join(name);
-            if candidate.join("encoder.int8.onnx").exists() {
-                return std::fs::canonicalize(candidate).ok();
-            }
-        }
-    }
-    None
+    model_dir_named(app_data, ASR_MODEL_MULTILINGUAL)
+        .or_else(|| model_dir_named(app_data, ASR_MODEL_EN))
 }

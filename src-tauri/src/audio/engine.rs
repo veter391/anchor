@@ -1,33 +1,40 @@
-//! ASR engine selection behind one interface: the streaming Nemotron primary
-//! (audio/asr.rs) or the offline Parakeet + LocalAgreement-2 fallback
-//! (audio/asr_offline.rs). Enum dispatch — not trait objects — so the proven
-//! streaming path is untouched and the hot per-chunk `feed` stays a direct call.
+//! ASR engine + model selection behind one interface (Handy-style: the user
+//! picks from a few genuinely-good models, not a pile). The streaming Nemotron
+//! primary (audio/asr.rs) runs either its multilingual or its faster EN-only
+//! model; the offline Parakeet + LocalAgreement-2 fallback (audio/asr_offline.rs)
+//! is the weak-CPU / compatibility path. Enum dispatch — not trait objects — so
+//! the proven streaming path is untouched and the hot per-chunk `feed` stays a
+//! direct call.
 
-use super::asr::{Asr, ChannelStream, Emit};
-use super::asr_offline::{LocalAgreementChannel, ParakeetAsr};
-use std::path::Path;
+use super::asr::{self, Asr, ChannelStream, Emit};
+use super::asr_offline::{self, LocalAgreementChannel, ParakeetAsr};
+use std::path::{Path, PathBuf};
 
-/// Which engine to run. `Auto` = the streaming primary when its model is present,
-/// else the fallback. `Offline` forces the fallback (weak CPUs).
+/// Which model to run. `Auto` = the multilingual streaming model when present,
+/// else EN-only, else the offline fallback.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EnginePref {
     Auto,
-    Streaming,
+    Multilingual,
+    English,
     Offline,
 }
 
 impl EnginePref {
     pub fn parse(s: &str) -> Self {
         match s.trim().to_ascii_lowercase().as_str() {
-            "offline" | "parakeet" | "fallback" => EnginePref::Offline,
-            "streaming" | "nemotron" | "primary" => EnginePref::Streaming,
+            "offline" | "parakeet" | "compatibility" | "fallback" => EnginePref::Offline,
+            "english" | "en" => EnginePref::English,
+            // "streaming" is the legacy value for the streaming primary.
+            "multilingual" | "multi" | "streaming" | "nemotron" => EnginePref::Multilingual,
             _ => EnginePref::Auto,
         }
     }
 }
 
 pub enum AsrEngine {
-    Streaming(Asr),
+    /// Streaming Nemotron; the label distinguishes the multilingual vs EN model.
+    Streaming(Asr, &'static str),
     Offline(ParakeetAsr),
 }
 
@@ -37,26 +44,49 @@ pub enum AsrChannel {
 }
 
 impl AsrEngine {
-    /// Load per the preference, falling back to whichever model is actually
-    /// installed if the preferred one is missing.
+    /// Load the chosen model, falling back to whichever is actually installed.
     pub fn load(app_data: &Path, num_threads: i32, pref: EnginePref) -> Result<Self, String> {
-        let stream = super::asr::model_dir(app_data);
-        let offline = super::asr_offline::model_dir(app_data);
+        // The multilingual dir honours the ANCHOR_ASR_MODEL_DIR dev override.
+        let multi: Option<PathBuf> = std::env::var("ANCHOR_ASR_MODEL_DIR")
+            .ok()
+            .map(PathBuf::from)
+            .filter(|p| p.join("encoder.int8.onnx").exists())
+            .or_else(|| asr::model_dir_named(app_data, asr::ASR_MODEL_MULTILINGUAL));
+        let english = asr::model_dir_named(app_data, asr::ASR_MODEL_EN);
+        let offline = asr_offline::model_dir(app_data);
+
+        let load_multi =
+            |d: &Path| Asr::load(d, num_threads).map(|a| AsrEngine::Streaming(a, "multilingual"));
+        let load_english =
+            |d: &Path| Asr::load(d, num_threads).map(|a| AsrEngine::Streaming(a, "english"));
+        let load_offline = |d: &Path| ParakeetAsr::load(d, num_threads).map(AsrEngine::Offline);
+
         match pref {
-            EnginePref::Offline => {
-                if let Some(d) = &offline {
-                    return ParakeetAsr::load(d, num_threads).map(AsrEngine::Offline);
+            EnginePref::English => {
+                if let Some(d) = &english {
+                    return load_english(d);
                 }
-                if let Some(d) = &stream {
-                    return Asr::load(d, num_threads).map(AsrEngine::Streaming);
+                if let Some(d) = &multi {
+                    return load_multi(d);
                 }
             }
-            EnginePref::Streaming | EnginePref::Auto => {
-                if let Some(d) = &stream {
-                    return Asr::load(d, num_threads).map(AsrEngine::Streaming);
+            EnginePref::Offline => {
+                if let Some(d) = &offline {
+                    return load_offline(d);
+                }
+                if let Some(d) = &multi {
+                    return load_multi(d);
+                }
+            }
+            EnginePref::Multilingual | EnginePref::Auto => {
+                if let Some(d) = &multi {
+                    return load_multi(d);
+                }
+                if let Some(d) = &english {
+                    return load_english(d);
                 }
                 if let Some(d) = &offline {
-                    return ParakeetAsr::load(d, num_threads).map(AsrEngine::Offline);
+                    return load_offline(d);
                 }
             }
         }
@@ -65,21 +95,21 @@ impl AsrEngine {
 
     pub fn label(&self) -> &'static str {
         match self {
-            AsrEngine::Streaming(_) => "streaming-nemotron",
+            AsrEngine::Streaming(_, label) => label,
             AsrEngine::Offline(_) => "offline-parakeet",
         }
     }
 
     pub fn new_channel(&self, language: &str) -> AsrChannel {
         match self {
-            AsrEngine::Streaming(a) => AsrChannel::Streaming(a.new_channel(language)),
+            AsrEngine::Streaming(a, _) => AsrChannel::Streaming(a.new_channel(language)),
             AsrEngine::Offline(p) => AsrChannel::Offline(p.new_channel(language)),
         }
     }
 
     pub fn feed(&self, ch: &mut AsrChannel, sample_rate: i32, samples: &[f32]) -> Emit {
         match (self, ch) {
-            (AsrEngine::Streaming(a), AsrChannel::Streaming(c)) => a.feed(c, sample_rate, samples),
+            (AsrEngine::Streaming(a, _), AsrChannel::Streaming(c)) => a.feed(c, sample_rate, samples),
             (AsrEngine::Offline(p), AsrChannel::Offline(c)) => p.feed(c, sample_rate, samples),
             // Channels are always created by this same engine, so the arms above
             // are exhaustive in practice; a mismatch never occurs.

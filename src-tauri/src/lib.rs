@@ -329,9 +329,10 @@ fn setting_set(conn: &Connection, key: &str, value: &str) -> Result<(), String> 
     Ok(())
 }
 
-/// The chosen speech engine: "auto" (streaming primary, offline fallback if the
-/// streaming model is missing), "streaming" (fast, force primary), or "offline"
-/// (Parakeet + LocalAgreement — heavier model but works on weak CPUs).
+/// The chosen speech model: "auto" (multilingual streaming, or the fallback if
+/// missing), "multilingual" (EN/ES/RU/UK/DE, real-time), "english" (EN-only,
+/// fastest), or "offline" (Parakeet + LocalAgreement — heavier but runs on weak
+/// CPUs). Stored under the `asr_engine` key; the audio worker reads it at go-live.
 #[tauri::command]
 fn get_asr_engine(db: tauri::State<'_, Db>) -> Result<String, String> {
     let conn = db.conn.lock().map_err(|e| e.to_string())?;
@@ -341,7 +342,7 @@ fn get_asr_engine(db: tauri::State<'_, Db>) -> Result<String, String> {
 #[tauri::command]
 fn set_asr_engine(db: tauri::State<'_, Db>, engine: String) -> Result<(), String> {
     let engine = match engine.as_str() {
-        "streaming" | "offline" | "auto" => engine,
+        "multilingual" | "english" | "offline" | "auto" => engine,
         _ => "auto".into(),
     };
     let conn = db.conn.lock().map_err(|e| e.to_string())?;
@@ -458,13 +459,14 @@ fn create_session(
         "interview" | "client" | "team" | "investor" | "other" => kind,
         _ => "other".into(),
     };
-    // Whitelist to the launch languages (+ auto). Anything else degrades to
+    // Whitelist to the supported languages (+ auto). Anything else degrades to
     // auto-detect rather than reaching the ASR's per-stream option raw.
     let language = match language.as_deref().map(str::trim) {
         Some("en") => "en",
         Some("es") => "es",
         Some("ru") => "ru",
         Some("uk") => "uk",
+        Some("de") => "de",
         _ => "auto",
     };
     let id = uuid::Uuid::new_v4().to_string();

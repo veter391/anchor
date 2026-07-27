@@ -201,10 +201,10 @@ export function Settings() {
         </label>
       </section>
 
-      {/* Speech recognition */}
+      {/* Speech recognition model */}
       <section style={{ ...panel, display: "grid", gap: 10 }}>
-        <SectionTitle emoji="🎙️" hint="How Anchor turns speech into text on your machine. Automatic suits almost everyone; switch to Compatibility only if a slower computer struggles to keep up.">
-          Speech engine
+        <SectionTitle emoji="🎙️" hint="The on-device model that turns speech into text. Automatic suits almost everyone. Pick English if all your calls are in English — it's the fastest. Pick Compatibility if a slower computer struggles to keep up.">
+          Speech model
         </SectionTitle>
         <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
           <select
@@ -220,7 +220,8 @@ export function Settings() {
             }}
           >
             <option value="auto">Automatic (recommended)</option>
-            <option value="streaming">Fast — real-time streaming</option>
+            <option value="multilingual">Multilingual — English, Spanish, Russian, Ukrainian, German</option>
+            <option value="english">English only — fastest</option>
             <option value="offline">Compatibility — for slower computers</option>
           </select>
           <span style={{ fontSize: 12.5, color: "var(--text-muted)" }}>

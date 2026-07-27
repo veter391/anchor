@@ -39,7 +39,7 @@ Anchor holds six anchors in front of your eyes, large, at the moment you need th
 
 ## Status
 
-Early — in design and pre-alpha development. The stack: Tauri 2 with a Rust core, dual-channel local audio capture, streaming on-device speech recognition, hybrid semantic + keyword retrieval in SQLite, everything local. English, Spanish, Russian and Ukrainian are the launch languages, and cards may be written in a different language than the call.
+Early — in design and pre-alpha development. The stack: Tauri 2 with a Rust core, dual-channel local audio capture, streaming on-device speech recognition, hybrid semantic + keyword retrieval in SQLite, everything local. English, Spanish, Russian, Ukrainian and German are the launch languages, and cards may be written in a different language than the call.
 
 ## Licence
 
