@@ -4,6 +4,7 @@
 
 pub mod aec;
 pub mod asr;
+pub mod asr_offline;
 pub mod capture;
 
 use asr::{Asr, Emit};
