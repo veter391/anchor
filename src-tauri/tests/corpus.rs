@@ -274,3 +274,39 @@ fn coverage_report_counts_only_cards_that_came_up() {
     assert_eq!(rep2.covered, 2);
     assert_eq!(rep2.verdict, "green", "2 of 2 = 100% >= 70% floor");
 }
+
+#[test]
+fn real_asr_transcripts_of_generated_es_ru_uk_voices_hit_the_right_en_card() {
+    // These are the ACTUAL output of the shipped multilingual ASR on ElevenLabs-
+    // generated ES/RU/UK interviewer questions (Phase-7.4, 2026-07-27 — the voices
+    // live in spike/voices, the transcripts came from the `asr_file` example).
+    // Proves the full launch-language path end to end: generated speech → ASR →
+    // cross-lingual retrieval → the correct EN card, for ALL launch languages
+    // (Ukrainian included, which the older test above did not cover).
+    let (mut conn, embedder) = setup();
+    let parsed = parse_markdown(CORPUS, "en");
+    import_cards(&mut conn, &embedder, parsed, None).unwrap();
+    let title_of = |id: &str| {
+        list_cards(&conn)
+            .unwrap()
+            .into_iter()
+            .find(|c| c.id == id)
+            .unwrap()
+            .title
+    };
+
+    let cases = [
+        ("ES", "dejas tu propia empresa para asumir un nuevo", "Why are you leaving your own company?"),
+        ("RU", "Расскажите, как прошла миграция на кубернете сыйшей комане", "Tell me about the Kubernetes migration"),
+        ("UK", "Яки у вас очікування щодо зарплати най посаді", "What are your salary expectations?"),
+    ];
+    for (lang, transcript, expected) in cases {
+        let m = query_cards(&conn, &embedder, transcript).unwrap();
+        assert!(!m.is_empty(), "{lang}: retrieval returned a candidate");
+        assert_eq!(
+            title_of(&m[0].card_id),
+            expected,
+            "{lang} ASR transcript retrieves the right EN card (cross-lingual)"
+        );
+    }
+}
