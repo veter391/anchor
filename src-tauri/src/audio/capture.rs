@@ -11,7 +11,6 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
-use std::time::Instant;
 
 pub const RATE: i32 = 16_000;
 
@@ -25,10 +24,11 @@ pub struct AudioChunk {
     pub channel: Channel,
     pub sample_rate: i32,
     pub samples: Vec<f32>,
-    /// Microseconds since a shared capture origin, stamped when the chunk was
-    /// drained. Both channels share the origin, so their timestamps sit on one
-    /// timeline — the AEC reference aligner (audio/aec.rs) needs this to place
-    /// the intermittent "them" loopback against the continuous mic.
+    /// Microseconds of this chunk's FIRST sample on the WASAPI QPC clock (the
+    /// system performance counter). Both channels are stamped from the same
+    /// clock, so their timestamps align to the sample — the AEC reference
+    /// aligner (audio/aec.rs) needs this to place the intermittent "them"
+    /// loopback against the continuous mic.
     pub ts_us: u64,
 }
 
@@ -51,8 +51,6 @@ pub fn start(tx: Sender<AudioChunk>) -> Result<CaptureHandles, String> {
     use wasapi::Direction;
     let stop = Arc::new(AtomicBool::new(false));
     let mut threads = Vec::new();
-    // One origin shared by both threads → their chunk timestamps share a timeline.
-    let origin = Instant::now();
 
     for (channel, direction) in [
         (Channel::Them, Direction::Render), // render endpoint → loopback
@@ -61,7 +59,7 @@ pub fn start(tx: Sender<AudioChunk>) -> Result<CaptureHandles, String> {
         let stop = stop.clone();
         let tx = tx.clone();
         threads.push(std::thread::spawn(move || {
-            if let Err(e) = capture_loop(channel, direction, &stop, &tx, origin) {
+            if let Err(e) = capture_loop(channel, direction, &stop, &tx) {
                 tracing::warn!(?channel, error = %e, "capture thread stopped");
             }
         }));
@@ -102,13 +100,12 @@ fn capture_loop(
     direction: wasapi::Direction,
     stop: &AtomicBool,
     tx: &Sender<AudioChunk>,
-    origin: Instant,
 ) -> Result<(), String> {
     use wasapi::initialize_mta;
 
     let _ = initialize_mta();
     while !stop.load(Ordering::SeqCst) {
-        match run_stream_once(channel, &direction, stop, tx, origin) {
+        match run_stream_once(channel, &direction, stop, tx) {
             Ok(StreamExit::Stopped) => break,
             Ok(StreamExit::DeviceChanged) => {
                 tracing::info!(?channel, "audio default device changed — rebuilding capture");
@@ -135,7 +132,6 @@ fn run_stream_once(
     direction: &wasapi::Direction,
     stop: &AtomicBool,
     tx: &Sender<AudioChunk>,
-    origin: Instant,
 ) -> Result<StreamExit, String> {
     use std::collections::VecDeque;
     use wasapi::*;
@@ -165,11 +161,14 @@ fn run_stream_once(
 
     // Poll the default endpoint every ~1 s (5 × the 200 ms event timeout).
     let mut ticks: u32 = 0;
+    // Timeline cursor (µs of the next expected sample) — continues the QPC clock
+    // seamlessly across a rare invalid stamp so the timeline never jumps.
+    let mut last_end_us: u64 = 0;
     let exit = loop {
         if stop.load(Ordering::SeqCst) {
             break StreamExit::Stopped;
         }
-        capture
+        let info = capture
             .read_from_device_to_deque(&mut queue)
             .map_err(|e| e.to_string())?;
         if queue.len() >= 4 {
@@ -181,11 +180,21 @@ fn run_stream_once(
                 }
                 samples.push(f32::from_le_bytes(buf));
             }
+            // QPC time (100 ns units) of the packet's first frame → µs. Shared
+            // system clock across both channels ⇒ sample-accurate alignment.
+            let ts_us = if !info.flags.timestamp_error && info.timestamp > 0 {
+                info.timestamp / 10
+            } else if last_end_us > 0 {
+                last_end_us
+            } else {
+                info.timestamp / 10
+            };
+            last_end_us = ts_us + samples.len() as u64 * 1_000_000 / RATE as u64;
             if tx
                 .send(AudioChunk {
                     channel,
                     sample_rate: RATE,
-                    ts_us: origin.elapsed().as_micros() as u64,
+                    ts_us,
                     samples,
                 })
                 .is_err()

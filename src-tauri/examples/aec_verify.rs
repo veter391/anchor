@@ -34,6 +34,10 @@ fn main() {
         .and_then(|s| s.parse().ok())
         .unwrap_or(16);
     let aec_on = std::env::var_os("ANCHOR_DISABLE_AEC").is_none();
+    // Diagnostic: run AEC on the mic but never feed it a reference (empty = all
+    // zeros). Simulates the headphones/no-echo case — measures whether the
+    // speex preprocess alone degrades clean speech reaching the mic.
+    let no_ref = std::env::var_os("ANCHOR_AEC_NOREF").is_some();
     let mut ec = EchoCanceller::new();
 
     let (tx, rx) = channel();
@@ -54,7 +58,9 @@ fn main() {
         if let Ok(chunk) = rx.recv_timeout(Duration::from_millis(200)) {
             match chunk.channel {
                 Channel::Them => {
-                    ec.push_reference(chunk.ts_us, &chunk.samples);
+                    if !no_ref {
+                        ec.push_reference(chunk.ts_us, &chunk.samples);
+                    }
                     if let Emit::Final(t) = asr.feed(&mut them, chunk.sample_rate, &chunk.samples) {
                         them_txt.push_str(&t);
                         them_txt.push(' ');

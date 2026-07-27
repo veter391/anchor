@@ -23,8 +23,10 @@ const RATE: i64 = 16_000;
 /// speex frame = 10 ms at 16 kHz — `cancel_echo` works one frame at a time.
 const FRAME: usize = 160;
 /// Cancel the mic this far behind its newest sample, so a slightly-late "them"
-/// chunk for the same instant has arrived before we process that frame (~100 ms).
-const LAG: i64 = 1_600;
+/// chunk for the same instant has arrived before we process that frame. With
+/// sample-accurate QPC timestamps the clocks don't skew, so this only needs to
+/// cover inter-thread delivery jitter (~50 ms).
+const LAG: i64 = 800;
 /// Never zero-fill a gap larger than this (timestamp glitch / very long silence):
 /// reset the line instead, to bound memory and avoid a pathological fill.
 const MAX_GAP: i64 = RATE;
@@ -107,10 +109,24 @@ pub struct EchoCanceller {
 
 impl EchoCanceller {
     pub fn new() -> Self {
-        // Defaults: frame 160, filter 1600 (100 ms tail), 16 kHz, preprocess on
-        // (residual-echo suppression + light denoise — good for ASR).
+        // preprocess OFF, by measurement (aec_bench, 10_RESEARCH_LOG): ON gives
+        // 40 dB single-talk cancellation but suppresses the near-end ~10 dB in
+        // double-talk (the user's own words become untranscribable); OFF keeps a
+        // strong 22 dB and preserves the user (−5 dB), which the coverage path
+        // needs. Residual echo is handled by the text-level filter.
+        Self::with_preprocess(false)
+    }
+
+    /// `preprocess` toggles speex's post-filter (residual-echo suppression +
+    /// denoise). It sharpens single-talk cancellation but over-suppresses the
+    /// near-end during double-talk — the bench measures the trade.
+    pub fn with_preprocess(preprocess: bool) -> Self {
+        let config = AecConfig {
+            enable_preprocess: preprocess,
+            ..AecConfig::default() // frame 160, filter 1600 (100 ms), 16 kHz
+        };
         Self {
-            aec: Aec::new(&AecConfig::default()),
+            aec: Aec::new(&config),
             reference: TimeLine::new(),
             mic: TimeLine::new(),
             next_pos: None,
@@ -118,15 +134,14 @@ impl EchoCanceller {
         }
     }
 
-    /// Timeline sample-position of a chunk's first sample: samples elapsed at
-    /// read time, minus the chunk length.
-    fn pos_of(ts_us: u64, len: usize) -> i64 {
-        (ts_us as i64 * RATE) / 1_000_000 - len as i64
+    /// Timeline sample-position of a chunk's FIRST sample, from its QPC time.
+    fn pos_of(ts_us: u64) -> i64 {
+        (ts_us as i64 * RATE) / 1_000_000
     }
 
     /// Buffer far-end ("them" loopback) samples as the echo reference.
     pub fn push_reference(&mut self, ts_us: u64, samples: &[f32]) {
-        let pos = Self::pos_of(ts_us, samples.len());
+        let pos = Self::pos_of(ts_us);
         let s: Vec<i16> = samples.iter().map(|&x| to_i16(x)).collect();
         self.reference.write(pos, &s);
     }
@@ -134,7 +149,7 @@ impl EchoCanceller {
     /// Feed mic ("me") samples; return echo-cancelled samples ready for ASR.
     /// Output lags real time by ~LAG so the reference for each frame has settled.
     pub fn push_mic(&mut self, ts_us: u64, samples: &[f32]) -> Vec<f32> {
-        let pos = Self::pos_of(ts_us, samples.len());
+        let pos = Self::pos_of(ts_us);
         let s: Vec<i16> = samples.iter().map(|&x| to_i16(x)).collect();
         self.mic.write(pos, &s);
         self.newest_mic = self.mic.end;
@@ -212,28 +227,27 @@ mod tests {
     }
 
     #[test]
-    fn pos_of_places_a_10ms_chunk_read_at_10ms_at_origin() {
-        // 160 samples = 10 ms; read at t=10 ms → occupies [0, 160).
-        assert_eq!(EchoCanceller::pos_of(10_000, FRAME), 0);
-        // A second 10 ms chunk read at t=20 ms → [160, 320).
-        assert_eq!(EchoCanceller::pos_of(20_000, FRAME), FRAME as i64);
+    fn pos_of_maps_first_sample_time_to_sample_index() {
+        // ts is the FIRST sample's time: t=0 → sample 0, t=10 ms → sample 160.
+        assert_eq!(EchoCanceller::pos_of(0), 0);
+        assert_eq!(EchoCanceller::pos_of(10_000), FRAME as i64);
     }
 
     #[test]
     fn canceller_emits_lagged_frames_and_survives_a_reference_gap() {
         let mut ec = EchoCanceller::new();
-        // Feed 40 × 10 ms mic chunks (400 ms) with matching timestamps; feed a
-        // reference only for the middle stretch (a gap on both sides).
+        // Feed 60 × 10 ms mic chunks (600 ms) with first-sample timestamps; feed
+        // a reference only for the middle stretch (a gap on both sides).
         let mut total = 0usize;
-        for k in 0..40u64 {
-            let ts = (k + 1) * 10_000; // 10 ms cadence
-            if (10..20).contains(&k) {
+        for k in 0..60u64 {
+            let ts = k * 10_000; // first sample of chunk k at k×10 ms
+            if (20..40).contains(&k) {
                 ec.push_reference(ts, &[0.2f32; FRAME]);
             }
             total += ec.push_mic(ts, &[0.1f32; FRAME]).len();
         }
-        // With a 100 ms lag we should have emitted most frames, quantised to FRAME.
-        assert!(total >= 25 * FRAME, "emitted the bulk of the frames: {total}");
+        // With the ~50 ms lag we emit the bulk of the frames, quantised to FRAME.
+        assert!(total >= 45 * FRAME, "emitted the bulk of the frames: {total}");
         assert_eq!(total % FRAME, 0, "output is frame-quantised");
     }
 }
