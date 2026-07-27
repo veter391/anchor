@@ -1,9 +1,24 @@
-# ── Internal (never in the repo) ──────────────────────────────
+# ── Internal planning & working docs (never in the repo) ──────
 /Documents/
 /OWNER-RULES.md
 /archived/
 /spike/
 *.local.md
+
+# ── AI-tooling / assistant config (never in the repo) ─────────
+/CLAUDE.md
+CLAUDE.md
+/.claude/
+/.cursor/
+.mcp.json
+.aider*
+
+# ── Machine-specific dev scripts (paths differ per machine) ───
+/build-env.bat
+
+# ── Draft/candidate brand assets (only the final ones ship) ───
+/branding/cand*
+/branding/v2*
 
 # ── Secrets ───────────────────────────────────────────────────
 .env

@@ -2,6 +2,10 @@
 
 **Prepared, not prompted.**
 
+[![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
+&nbsp;![Platform: Windows](https://img.shields.io/badge/platform-Windows%2011-blue.svg)
+&nbsp;![Local-first](https://img.shields.io/badge/local--first-yes-brightgreen.svg)
+
 Anchor is a live notes overlay for calls. You prepare your own cards; Anchor puts the right one in front of you the moment the topic comes up, and tracks which points you have already covered.
 
 **No stealth mode. No generated answers to read aloud. Nothing leaves your machine.** It is useless until you have done the work — that is the point.
@@ -40,6 +44,23 @@ Anchor holds six anchors in front of your eyes, large, at the moment you need th
 ## Status
 
 Early — in design and pre-alpha development. The stack: Tauri 2 with a Rust core, dual-channel local audio capture, streaming on-device speech recognition, hybrid semantic + keyword retrieval in SQLite, everything local. English, Spanish, Russian, Ukrainian and German are the launch languages, and cards may be written in a different language than the call.
+
+## Build from source
+
+Windows 11, with Rust (`msvc`), Node + **pnpm**, and the C++ / CMake / Ninja / LLVM toolchain — the embedded llama.cpp and speexdsp are built from source. Full prerequisites and the one build-environment caveat are in [CONTRIBUTING.md](CONTRIBUTING.md).
+
+```bash
+pnpm install
+pnpm tauri dev
+```
+
+## Documentation
+
+- [Architecture](docs/architecture.md) — how the capture → recognition → match → overlay pipeline works
+- [Models](docs/models.md) — the on-device speech, retrieval, and assembly models
+- [Security & privacy](SECURITY.md) — what stays local, and the only three network egress points
+- [Contributing](CONTRIBUTING.md) — build from source and the review gate
+- [Third-party notices](THIRD_PARTY.md) — model and library licenses
 
 ## Licence
 

@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  frontend:
+    name: Frontend (types + lint)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec tsc --noEmit
+      - run: pnpm exec eslint src
+
+  rust:
+    name: Rust (clippy + tests)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - name: Install native build tools
+        run: choco install ninja llvm -y
+      - name: Build the frontend (tauri-build needs the dist)
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+      - name: Clippy
+        working-directory: src-tauri
+        env:
+          LIBCLANG_PATH: C:\Program Files\LLVM\bin
+          CMAKE_GENERATOR: Ninja
+          CMAKE_ARGS: -DGGML_OPENMP=OFF
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Tests (unit)
+        working-directory: src-tauri
+        env:
+          LIBCLANG_PATH: C:\Program Files\LLVM\bin
+          CMAKE_GENERATOR: Ninja
+          CMAKE_ARGS: -DGGML_OPENMP=OFF
+        run: cargo test --lib
