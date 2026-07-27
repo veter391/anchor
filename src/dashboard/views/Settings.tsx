@@ -32,12 +32,19 @@ export function Settings() {
   const [boot, setBoot] = useState<BootInfo | null>(null);
   const [look, setLook] = useState<Appearance>({ accent: "teal", theme: "dark", overlay_opacity: 90 });
   const [captureExcluded, setCaptureExcluded] = useState(false);
+  const [asrEngine, setAsrEngine] = useState("auto");
 
   useEffect(() => {
     invoke<BootInfo>("boot_info").then(setBoot).catch(() => {});
     invoke<Appearance>("get_appearance").then(setLook).catch(() => {});
     invoke<boolean>("get_capture_excluded").then(setCaptureExcluded).catch(() => {});
+    invoke<string>("get_asr_engine").then(setAsrEngine).catch(() => {});
   }, []);
+
+  const changeEngine = (engine: string) => {
+    setAsrEngine(engine);
+    invoke("set_asr_engine", { engine }).catch(() => {});
+  };
 
   const toggleCapture = (on: boolean) => {
     setCaptureExcluded(on);
@@ -192,6 +199,34 @@ export function Settings() {
             </span>
           </span>
         </label>
+      </section>
+
+      {/* Speech recognition */}
+      <section style={{ ...panel, display: "grid", gap: 10 }}>
+        <SectionTitle emoji="🎙️" hint="How Anchor turns speech into text on your machine. Automatic suits almost everyone; switch to Compatibility only if a slower computer struggles to keep up.">
+          Speech engine
+        </SectionTitle>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+          <select
+            value={asrEngine}
+            onChange={(e) => changeEngine(e.target.value)}
+            style={{
+              background: "var(--bg-elevated)",
+              color: "var(--text)",
+              border: "1px solid var(--border)",
+              borderRadius: 8,
+              padding: "9px 12px",
+              fontSize: 14,
+            }}
+          >
+            <option value="auto">Automatic (recommended)</option>
+            <option value="streaming">Fast — real-time streaming</option>
+            <option value="offline">Compatibility — for slower computers</option>
+          </select>
+          <span style={{ fontSize: 12.5, color: "var(--text-muted)" }}>
+            Takes effect on your next call.
+          </span>
+        </div>
       </section>
 
       {/* Developer */}

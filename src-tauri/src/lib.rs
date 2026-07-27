@@ -329,6 +329,25 @@ fn setting_set(conn: &Connection, key: &str, value: &str) -> Result<(), String> 
     Ok(())
 }
 
+/// The chosen speech engine: "auto" (streaming primary, offline fallback if the
+/// streaming model is missing), "streaming" (fast, force primary), or "offline"
+/// (Parakeet + LocalAgreement — heavier model but works on weak CPUs).
+#[tauri::command]
+fn get_asr_engine(db: tauri::State<'_, Db>) -> Result<String, String> {
+    let conn = db.conn.lock().map_err(|e| e.to_string())?;
+    Ok(setting_get(&conn, "asr_engine").unwrap_or_else(|| "auto".into()))
+}
+
+#[tauri::command]
+fn set_asr_engine(db: tauri::State<'_, Db>, engine: String) -> Result<(), String> {
+    let engine = match engine.as_str() {
+        "streaming" | "offline" | "auto" => engine,
+        _ => "auto".into(),
+    };
+    let conn = db.conn.lock().map_err(|e| e.to_string())?;
+    setting_set(&conn, "asr_engine", &engine)
+}
+
 #[tauri::command]
 fn get_llm_config(db: tauri::State<'_, Db>) -> Result<LlmConfig, String> {
     let conn = db.conn.lock().map_err(|e| e.to_string())?;
@@ -837,6 +856,8 @@ pub fn run() {
             delete_model,
             get_llm_config,
             set_llm_config,
+            get_asr_engine,
+            set_asr_engine,
             generate_cards,
             adapt_corpus,
             restyle_card,
