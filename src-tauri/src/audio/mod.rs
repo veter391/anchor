@@ -6,8 +6,9 @@ pub mod aec;
 pub mod asr;
 pub mod asr_offline;
 pub mod capture;
+pub mod engine;
 
-use asr::{Asr, Emit};
+use asr::Emit;
 use capture::{AudioChunk, Channel};
 use serde::Serialize;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -109,20 +110,31 @@ pub fn start_audio(app: tauri::AppHandle, audio: tauri::State<'_, AudioState>) -
         return Ok(());
     }
 
-    // The ASR model load reads ~633 MB from disk over several seconds — do it
+    // The ASR model load reads ~630 MB from disk over several seconds — do it
     // BEFORE taking the state lock so stop/status stay responsive during start.
     // Portable data folder, consistent with every other model path.
     let data_dir = crate::paths::data_dir();
-    let model_dir = asr::model_dir(&data_dir)
-        .ok_or("no ASR model found — set ANCHOR_ASR_MODEL_DIR or install the model")?;
     let threads = std::thread::available_parallelism()
         .map(|n| n.get() as i32)
         .unwrap_or(4)
         .min(8);
-    let asr = Asr::load(&model_dir, threads)?;
+    // Engine choice: env override, else the `asr_engine` setting, else Auto
+    // (streaming primary when present, else the offline Parakeet fallback).
+    let pref = std::env::var("ANCHOR_ASR_ENGINE")
+        .ok()
+        .or_else(|| {
+            app.state::<crate::Db>()
+                .conn
+                .lock()
+                .ok()
+                .and_then(|c| crate::setting_get(&c, "asr_engine"))
+        })
+        .map(|s| engine::EnginePref::parse(&s))
+        .unwrap_or(engine::EnginePref::Auto);
+    let asr = engine::AsrEngine::load(&data_dir, threads, pref)?;
     // Steer the multilingual model with the active session's expected language.
     let language = call_language(&app);
-    tracing::info!(language = %language, "resolved ASR language for the call");
+    tracing::info!(engine = asr.label(), language = %language, "ASR engine for the call");
 
     let mut guard = audio.running.lock().map_err(|e| e.to_string())?;
     if guard.is_some() {
@@ -136,6 +148,7 @@ pub fn start_audio(app: tauri::AppHandle, audio: tauri::State<'_, AudioState>) -
     // Millis-since-start of the last chunk seen on each channel (0 = never).
     let them_seen = Arc::new(AtomicU64::new(0));
     let me_seen = Arc::new(AtomicU64::new(0));
+    let model = Some(asr.label().to_string()); // captured before `asr` moves into the worker
     let worker = {
         let app = app.clone();
         let stop = stop_worker.clone();
@@ -156,9 +169,6 @@ pub fn start_audio(app: tauri::AppHandle, audio: tauri::State<'_, AudioState>) -
         worker: Some(worker),
         health: Some(health),
     });
-    let model = model_dir
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned());
     app.emit_to(
         "dashboard",
         "audio:status",
@@ -207,7 +217,7 @@ pub fn stop_audio(app: tauri::AppHandle, audio: tauri::State<'_, AudioState>) ->
 /// finals go into the rolling windows (match engine); partials go to the UI.
 fn worker_loop(
     app: tauri::AppHandle,
-    asr: Asr,
+    asr: engine::AsrEngine,
     language: String,
     rx: Receiver<AudioChunk>,
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,

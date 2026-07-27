@@ -310,7 +310,7 @@ struct LlmConfig {
     bullet_style: String,
 }
 
-fn setting_get(conn: &Connection, key: &str) -> Option<String> {
+pub(crate) fn setting_get(conn: &Connection, key: &str) -> Option<String> {
     conn.query_row(
         "SELECT value FROM settings WHERE key = ?1",
         [key],
