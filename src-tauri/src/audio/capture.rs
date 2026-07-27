@@ -67,6 +67,27 @@ pub fn start(_tx: Sender<AudioChunk>) -> Result<CaptureHandles, String> {
     Err("audio capture is Windows-only in this build".into())
 }
 
+/// Why a single stream run ended — so the supervisor knows whether to rebuild.
+#[cfg(windows)]
+enum StreamExit {
+    /// The app asked capture to stop (or the ASR worker went away): do not rebuild.
+    Stopped,
+    /// The default endpoint changed under us (Bluetooth A2DP↔HFP switch, unplug,
+    /// user-picked a new device): rebuild on the new default.
+    DeviceChanged,
+}
+
+/// Supervises one channel's capture: opens the default endpoint and, when it
+/// changes mid-call or the stream errors, rebuilds in place instead of dying.
+///
+/// The `wasapi` crate does not wrap `IMMNotificationClient` (enumerator-level
+/// default-device-changed), so we detect the change by polling the current
+/// default endpoint id (~1 s) and comparing it to the one we opened. A silent
+/// Bluetooth profile switch leaves the old stream error-free but no longer the
+/// default, so polling — not a read error — is what catches it; read errors
+/// (device removal) are handled too. Acceptance bar (02 §1 / 09 Phase 7):
+/// recover automatically, never fail silently. The dead-channel watchdog
+/// (audio/mod.rs) surfaces the brief gap to the UI.
 #[cfg(windows)]
 fn capture_loop(
     channel: Channel,
@@ -74,14 +95,46 @@ fn capture_loop(
     stop: &AtomicBool,
     tx: &Sender<AudioChunk>,
 ) -> Result<(), String> {
+    use wasapi::initialize_mta;
+
+    let _ = initialize_mta();
+    while !stop.load(Ordering::SeqCst) {
+        match run_stream_once(channel, &direction, stop, tx) {
+            Ok(StreamExit::Stopped) => break,
+            Ok(StreamExit::DeviceChanged) => {
+                tracing::info!(?channel, "audio default device changed — rebuilding capture");
+            }
+            Err(e) => {
+                tracing::warn!(?channel, error = %e, "capture stream error — rebuilding");
+                // Back off so a persistently-failing device doesn't hot-loop.
+                for _ in 0..10 {
+                    if stop.load(Ordering::SeqCst) {
+                        return Ok(());
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// One capture stream, from open to teardown. Returns how it ended.
+#[cfg(windows)]
+fn run_stream_once(
+    channel: Channel,
+    direction: &wasapi::Direction,
+    stop: &AtomicBool,
+    tx: &Sender<AudioChunk>,
+) -> Result<StreamExit, String> {
     use std::collections::VecDeque;
     use wasapi::*;
 
-    let _ = initialize_mta();
     let enumerator = DeviceEnumerator::new().map_err(|e| e.to_string())?;
     let device = enumerator
-        .get_default_device(&direction)
+        .get_default_device(direction)
         .map_err(|e| e.to_string())?;
+    let opened_id = device.get_id().map_err(|e| e.to_string())?;
     let mut client = device.get_iaudioclient().map_err(|e| e.to_string())?;
 
     let desired = WaveFormat::new(32, 32, &SampleType::Float, RATE as usize, 1, None);
@@ -100,7 +153,12 @@ fn capture_loop(
     let mut queue: VecDeque<u8> = VecDeque::new();
     client.start_stream().map_err(|e| e.to_string())?;
 
-    while !stop.load(Ordering::SeqCst) {
+    // Poll the default endpoint every ~1 s (5 × the 200 ms event timeout).
+    let mut ticks: u32 = 0;
+    let exit = loop {
+        if stop.load(Ordering::SeqCst) {
+            break StreamExit::Stopped;
+        }
         capture
             .read_from_device_to_deque(&mut queue)
             .map_err(|e| e.to_string())?;
@@ -121,11 +179,36 @@ fn capture_loop(
                 })
                 .is_err()
             {
-                break; // worker gone
+                break StreamExit::Stopped; // worker gone — nothing to recover
+            }
+        }
+        ticks += 1;
+        if ticks >= 5 {
+            ticks = 0;
+            if default_device_changed(&enumerator, direction, &opened_id) {
+                break StreamExit::DeviceChanged;
             }
         }
         let _ = h_event.wait_for_event(200);
+    };
+    let _ = client.stop_stream();
+    Ok(exit)
+}
+
+/// True iff the current default endpoint id differs from the one we opened.
+/// A transient enumeration failure is treated as "unchanged" — we do not tear
+/// down a working stream over a momentary query hiccup.
+#[cfg(windows)]
+fn default_device_changed(
+    enumerator: &wasapi::DeviceEnumerator,
+    direction: &wasapi::Direction,
+    opened_id: &str,
+) -> bool {
+    match enumerator
+        .get_default_device(direction)
+        .and_then(|d| d.get_id())
+    {
+        Ok(current) => current != opened_id,
+        Err(_) => false,
     }
-    client.stop_stream().map_err(|e| e.to_string())?;
-    Ok(())
 }
