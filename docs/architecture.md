@@ -70,8 +70,8 @@ cannot hallucinate.
 ## Assembly (the unexpected question)
 
 When the best match falls below a confidence threshold, Anchor assembles a card
-of 4–6 bullets, grounded first in your own material. This is the only place a
-language model runs, and it is optional:
+of up to 8 bullets, sized to the question and grounded first in your own
+material. This is the only place a language model runs, and it is optional:
 
 - **Local (free):** an embedded GGUF model runs in-process (no server).
 - **API (bring-your-own-key):** any OpenAI-compatible endpoint.

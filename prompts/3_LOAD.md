@@ -13,7 +13,7 @@ Pick the kind: interview, client, team, investor, other. Pick the language you e
 
 The markdown file from Step 2. Anchor will:
 - parse the cards,
-- reject or offer to split anything over six bullets,
+- reject or offer to split anything over eight bullets (aim for about six),
 - warn about any bullet that reads like prose (that means you accidentally built a script, and a script will fail you),
 - embed and index everything, locally.
 

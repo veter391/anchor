@@ -29,7 +29,7 @@ lang: en
 
 ## Hard rules
 
-1. **Maximum six bullets per card.** If a topic needs more, split it into two cards.
+1. **Aim for about six bullets; eight is the hard cap** for a genuinely broad topic. If it needs more than eight, split it into two cards.
 2. **Each bullet is under about ten words.** Keywords, not sentences.
 3. **No prose. Ever.** If a bullet reads like something I would say out loud verbatim, it is wrong. Rewrite it as the trigger, not the speech.
    - Wrong: "I built an internal multi-agent platform with around 26 agents that handles our daily operations."
