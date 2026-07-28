@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
 import { Card, type CardData, type BulletState, type CardSource } from "./Card";
 
 interface CardRow {
@@ -158,6 +159,26 @@ export function Overlay() {
       unClear.then((f) => f()).catch(() => {});
     };
   }, []);
+
+  // Grow the overlay window to fit the card. 06_DESIGN §3: a broad card may
+  // carry up to 8 anchors and the overlay grows to a 520 px cap — there is
+  // never a scrollbar. A fixed 300 px window silently clipped the 7th/8th
+  // anchor off the bottom edge (drift audit 2026-07-28). Re-measured whenever
+  // the card changes (`activeKey`) and via a ResizeObserver for content shifts.
+  useEffect(() => {
+    const el = cardRef.current;
+    if (!el) return;
+    const win = getCurrentWindow();
+    const fit = () => {
+      // +12 = the wrapper's 6 px top/bottom padding; width stays the card width.
+      const h = Math.min(520, Math.ceil(el.getBoundingClientRect().height) + 12);
+      void win.setSize(new LogicalSize(440, h)).catch(() => {});
+    };
+    fit();
+    const ro = new ResizeObserver(fit);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [activeKey]);
 
   const card = assembled ?? (row ? withCoverage(row, covered) : EMPTY_STATE);
 

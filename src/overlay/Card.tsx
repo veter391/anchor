@@ -17,8 +17,13 @@ const SOURCE_LABEL: Partial<Record<CardSource, { text: string; color: string }>>
   unexpected: { text: "⚠ UNEXPECTED QUESTION · ", color: "var(--unexpected)" },
 };
 
+/** Up to this many anchors are shown. Owner decision 2026-07-23 (06_DESIGN §3):
+ *  broad topics may carry 7-8, and the overlay window grows to fit (see the
+ *  resize effect in Overlay.tsx). Matches the backend `MAX_BULLETS`. */
+const MAX_VISIBLE_BULLETS = 8;
+
 /** The overlay card. Glance-legibility rules from Documents/06_DESIGN.md:
- *  one card, max 6 bullets, 18px bullets, covered dims, next gets the accent
+ *  one card, up to 8 bullets, 18px bullets, covered dims, next gets the accent
  *  bar, motion limited to colour shifts and a 120 ms card fade. */
 export const Card = forwardRef<HTMLDivElement, { card: CardData }>(
   function Card({ card }, ref) {
@@ -75,7 +80,7 @@ export const Card = forwardRef<HTMLDivElement, { card: CardData }>(
           {card.title}
         </div>
 
-        {card.bullets.slice(0, 6).map((b, i) => (
+        {card.bullets.slice(0, MAX_VISIBLE_BULLETS).map((b, i) => (
           <div
             key={i}
             style={{

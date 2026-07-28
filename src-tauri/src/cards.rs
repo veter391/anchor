@@ -1,5 +1,6 @@
 //! Markdown card parser. The contract: a card is `## question-style heading`
-//! plus optional `tags:` / `lang:` lines plus up to six `- ` bullets.
+//! plus optional `tags:` / `lang:` lines plus up to `MAX_BULLETS` `- ` bullets
+//! (8 since the owner's 2026-07-23 decision; broad topics may carry 7-8).
 //! Anything else is rejected loudly, not fixed silently.
 
 use serde::Serialize;
