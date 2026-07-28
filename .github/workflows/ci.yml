@@ -35,6 +35,12 @@ jobs:
           components: clippy
       - name: Install native build tools
         run: choco install ninja llvm -y
+      # Put cl.exe / link.exe / INCLUDE / LIB on PATH (vcvars) so the embedded
+      # llama.cpp (ggml) and speexdsp build via CMake+Ninja. Without this the
+      # C dependencies fail to find the compiler. The cargo steps run in pwsh,
+      # not bash, so /usr/bin/link never shadows the MSVC linker.
+      - name: Set up MSVC developer environment
+        uses: ilammy/msvc-dev-cmd@v1
       - name: Build the frontend (tauri-build needs the dist)
         run: |
           pnpm install --frozen-lockfile
