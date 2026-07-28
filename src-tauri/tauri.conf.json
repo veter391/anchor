@@ -39,7 +39,19 @@
     }
   },
   "bundle": {
-    "active": false,
-    "icon": ["icons/icon.ico"]
+    "active": true,
+    "targets": ["nsis"],
+    "icon": ["icons/icon.ico"],
+    "publisher": "veter391",
+    "category": "Productivity",
+    "shortDescription": "Live notes overlay for online calls",
+    "longDescription": "A local-first live notes overlay for online calls. You prepare your own cards; Anchor puts the right one in front of you the moment the topic comes up, and tracks which points you have covered. Nothing leaves your machine.",
+    "resources": ["installer-libs/*"],
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "installerHooks": "installer.nsh"
+      }
+    }
   }
 }

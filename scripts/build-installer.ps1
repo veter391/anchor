@@ -1,0 +1,112 @@
+<#
+.SYNOPSIS
+  Build the Anchor Windows installer (NSIS .exe) with a reproducible, staged
+  set of native runtime DLLs.
+
+.DESCRIPTION
+  Anchor installs per-user (no admin) via an NSIS setup .exe -- see
+  docs/distribution.md. The installed anchor.exe must find its speech-runtime
+  DLLs (sherpa-onnx + ONNX Runtime) and the Microsoft Visual C++ runtime NEXT
+  TO it, exactly like the portable build. Those files are build-generated and
+  live under a machine-specific VS install, so they are gitignored and staged
+  fresh here rather than committed.
+
+  This script:
+    1. runs a release build (so the exe + the sherpa DLLs exist);
+    2. stages the exact self-contained DLL set into src-tauri/installer-libs/
+       (bundled as a Tauri resource; the NSIS POSTINSTALL hook in
+       src-tauri/installer.nsh then copies them beside the exe on the user's
+       machine and removes the staging folder);
+    3. runs the Tauri bundler to produce the NSIS installer.
+
+  The DLL set mirrors scripts/package-portable.ps1 (the portable distribution)
+  -- both are the same dependency-closure-verified set; keep them in sync.
+
+  Usage (from the repo root):
+      pwsh -File scripts/build-installer.ps1
+
+  The models are NOT bundled; they download on first run (docs/models.md).
+
+.NOTES
+  Windows / x64 only. Requires the build environment (build-env.bat wraps
+  vcvars64 + Ninja + LIBCLANG_PATH). The VC++ runtime files are redistributable
+  under the Visual Studio licence. The result is unsigned -- see
+  docs/distribution.md for the SmartScreen note.
+#>
+[CmdletBinding()]
+param(
+  [string]$ReleaseDir = "src-tauri/target/release",
+  [string]$LibsDir = "src-tauri/installer-libs",
+  [switch]$SkipBuild   # reuse an existing release build (faster iteration)
+)
+
+$ErrorActionPreference = 'Stop'
+
+function Fail($msg) { Write-Error $msg; exit 1 }
+
+# The build environment wrapper lives at the repo root. Resolve the root from
+# this script's location so the script works regardless of the caller's CWD.
+$root = Split-Path $PSScriptRoot -Parent
+Set-Location $root
+$buildEnv = Join-Path $root "build-env.bat"
+if (-not (Test-Path $buildEnv)) { Fail "build-env.bat not found at repo root ($root)." }
+
+# --- 1. Release build (emits anchor.exe + the sherpa/onnx DLLs) --------------
+if (-not $SkipBuild) {
+  Write-Host "[1/3] Release build (no bundle) ..." -ForegroundColor Cyan
+  & cmd /c "`"$buildEnv`" pnpm tauri build --no-bundle"
+  if ($LASTEXITCODE -ne 0) { Fail "Release build failed (exit $LASTEXITCODE)." }
+}
+$exe = Join-Path $ReleaseDir "anchor.exe"
+if (-not (Test-Path $exe)) { Fail "No release build at '$exe'. Remove -SkipBuild to build it." }
+
+# --- 2. Stage the self-contained DLL set into installer-libs/ ----------------
+Write-Host "[2/3] Staging runtime DLLs into $LibsDir ..." -ForegroundColor Cyan
+if (Test-Path $LibsDir) { Remove-Item $LibsDir -Recurse -Force }
+New-Item -ItemType Directory -Path $LibsDir -Force | Out-Null
+
+# 2a. Speech runtime, emitted beside the exe by the sherpa-onnx 'shared' build.
+$runtimeDlls = @(
+  "onnxruntime.dll",
+  "onnxruntime_providers_shared.dll",
+  "sherpa-onnx-c-api.dll",
+  "sherpa-onnx-cxx-api.dll"
+)
+foreach ($d in $runtimeDlls) {
+  $src = Join-Path $ReleaseDir $d
+  if (-not (Test-Path $src)) { Fail "Missing runtime DLL: $src (was the release built with the sherpa 'shared' feature?)" }
+  Copy-Item $src $LibsDir
+}
+
+# 2b. VC++ redistributable (CRT + OpenMP), located via vswhere.
+$vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio/Installer/vswhere.exe"
+if (-not (Test-Path $vswhere)) { Fail "vswhere.exe not found -- install Visual Studio 2022 Build Tools." }
+$vsRoot = & $vswhere -latest -products '*' -property installationPath
+if (-not $vsRoot) { Fail "No Visual Studio installation found by vswhere." }
+$redistRoot = Join-Path $vsRoot "VC/Redist/MSVC"
+$crtDir = Get-ChildItem $redistRoot -Directory -ErrorAction SilentlyContinue |
+  Sort-Object Name -Descending |
+  ForEach-Object { Join-Path $_.FullName "x64/Microsoft.VC143.CRT" } |
+  Where-Object { Test-Path $_ } | Select-Object -First 1
+if (-not $crtDir) { Fail "VC143 x64 CRT redist not found under $redistRoot." }
+$ompDir = Join-Path (Split-Path $crtDir) "Microsoft.VC143.OpenMP"
+Copy-Item (Join-Path $crtDir "*.dll") $LibsDir           # msvcp140*, vcruntime140*, concrt140, vccorlib140
+Copy-Item (Join-Path $ompDir "vcomp140.dll") $LibsDir    # OpenMP runtime (used by the static ONNX Runtime)
+
+$count = (Get-ChildItem $LibsDir -File).Count
+Write-Host "      staged $count DLLs" -ForegroundColor Green
+
+# --- 3. Bundle the NSIS installer --------------------------------------------
+Write-Host "[3/3] Bundling the NSIS installer ..." -ForegroundColor Cyan
+& cmd /c "`"$buildEnv`" pnpm tauri build"
+if ($LASTEXITCODE -ne 0) { Fail "Tauri bundle failed (exit $LASTEXITCODE)." }
+
+$nsis = Join-Path $ReleaseDir "bundle/nsis"
+$setup = Get-ChildItem $nsis -Filter "*-setup.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+if ($setup) {
+  $sizeMb = [math]::Round($setup.Length / 1MB, 1)
+  Write-Host "Installer ready: $($setup.FullName) (~$sizeMb MB)" -ForegroundColor Green
+} else {
+  Write-Host "Bundle finished; check $nsis" -ForegroundColor Green
+}
+Write-Host "Models are not bundled; they download on first run. Unsigned -- first launch shows SmartScreen. See docs/distribution.md." -ForegroundColor DarkYellow
