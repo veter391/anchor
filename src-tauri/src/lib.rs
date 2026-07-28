@@ -172,7 +172,14 @@ fn collect_md_files(dir: &Path, out: &mut Vec<PathBuf>, depth: u8) -> Result<(),
         std::fs::read_dir(dir).map_err(|e| format!("cannot read {}: {e}", dir.display()))?;
     for entry in entries.flatten() {
         let p = entry.path();
-        if p.is_dir() {
+        // Do NOT traverse symlinks/junctions (`is_dir()` follows them): a planted
+        // link could redirect the read outside the picked folder. `file_type()`
+        // comes from the dir entry and does not follow links.
+        let Ok(ft) = entry.file_type() else { continue };
+        if ft.is_symlink() {
+            continue;
+        }
+        if ft.is_dir() {
             collect_md_files(&p, out, depth + 1)?;
         } else if p.extension().and_then(|e| e.to_str()) == Some("md") {
             out.push(p);

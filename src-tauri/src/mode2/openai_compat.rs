@@ -34,12 +34,24 @@ pub struct OpenAiCompat {
     provider_name: &'static str,
 }
 
+/// Bounded HTTP client for API providers. Without timeouts a stalled endpoint
+/// wedges Mode-2 for the rest of the call: the `mode2_inflight` latch is only
+/// cleared when the request returns, so a request that never returns blocks
+/// every later assembly. Also bounds generate_cards / adapt_corpus.
+fn http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
+}
+
 impl OpenAiCompat {
     /// Preset for a provider id. Groq is the only one needing the
     /// max_completion_tokens field and json_object fallback (strict schema is
     /// gpt-oss-only there).
     pub fn preset(provider: &str, api_key: String, model: Option<String>) -> Self {
-        let http = reqwest::Client::new();
+        let http = http_client();
         match provider {
             "groq" => Self {
                 base_url: "https://api.groq.com/openai/v1".into(),
@@ -87,7 +99,7 @@ impl OpenAiCompat {
             token_field: TokenField::MaxTokens,
             schema_mode: SchemaMode::JsonObject,
             extra_headers: vec![],
-            http: reqwest::Client::new(),
+            http: http_client(),
             provider_name: "custom",
         }
     }

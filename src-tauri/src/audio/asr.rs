@@ -125,12 +125,16 @@ pub const ASR_MODEL_MULTILINGUAL: &str =
     "sherpa-onnx-nemotron-3.5-asr-streaming-0.6b-320ms-int8-2026-06-11";
 pub const ASR_MODEL_EN: &str = "sherpa-onnx-nemotron-speech-streaming-en-0.6b-int8-2026-01-14";
 
-/// Resolve one named model: installed (portable data), then the dev spike dir.
+/// Resolve one named model: installed (portable data), then — in DEBUG builds
+/// only — the dev spike dir. The CWD-relative spike fallback must not ship in a
+/// release build: it would load ONNX from an unverified, attacker-plantable
+/// relative path (release models are integrity-checked at download time).
 pub fn model_dir_named(app_data: &Path, name: &str) -> Option<PathBuf> {
     let installed = app_data.join("models").join(name);
     if installed.join("encoder.int8.onnx").exists() {
         return Some(installed);
     }
+    #[cfg(debug_assertions)]
     for up in ["..", "../..", "../../.."] {
         let candidate = Path::new(up).join("spike/audio/models").join(name);
         if candidate.join("encoder.int8.onnx").exists() {

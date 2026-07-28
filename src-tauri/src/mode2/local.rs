@@ -219,8 +219,23 @@ fn parse_assembly(out: &str) -> Result<RawAssembly, String> {
 pub fn extract_json(s: &str) -> Option<String> {
     let start = s.find('{')?;
     let mut depth = 0;
+    // Track string state: a brace inside a JSON string value (e.g. a bullet
+    // "+30% } margin") must NOT change depth, or the object is truncated.
+    let mut in_str = false;
+    let mut escaped = false;
     for (i, c) in s[start..].char_indices() {
+        if in_str {
+            if escaped {
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == '"' {
+                in_str = false;
+            }
+            continue;
+        }
         match c {
+            '"' => in_str = true,
             '{' => depth += 1,
             '}' => {
                 depth -= 1;
@@ -232,4 +247,21 @@ pub fn extract_json(s: &str) -> Option<String> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::extract_json;
+
+    #[test]
+    fn extract_json_ignores_braces_inside_strings() {
+        // The regression: a '}' inside a string value truncated the object.
+        let raw = r#"prose {"title":"Margin","points":["+30% } margin","scale {x}"]} tail"#;
+        let got = extract_json(raw).expect("object found");
+        assert_eq!(got, r#"{"title":"Margin","points":["+30% } margin","scale {x}"]}"#);
+        // Escaped quote inside a string must not end the string early.
+        let esc = r#"{"a":"he said \"hi}\" ok"}"#;
+        assert_eq!(extract_json(esc).unwrap(), esc);
+        assert!(extract_json("no json here").is_none());
+    }
 }
