@@ -44,8 +44,10 @@ folder (the exact self-contained set, verified with a dependency-closure check).
 2. Open **Settings → Speech model** and download a speech model (once).
 3. Follow the three steps in the app (Learn → Build cards → Load & go).
 
-The first embedding also downloads a small model in the background. Everything
-lands in `data/`, which Anchor restricts to your user account on Windows.
+The first embedding also downloads its model (~300 MB) in the background.
+Altogether a first run pulls roughly 1 GB (the speech model + the embedding
+model; the optional local assistant is extra). Everything lands in `data/`,
+which Anchor restricts to your user account on Windows.
 
 ## SmartScreen (unsigned builds)
 

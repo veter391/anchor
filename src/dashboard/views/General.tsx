@@ -53,11 +53,17 @@ const HOW = [
 export function General({ onNavigate }: { onNavigate: (k: NavKey) => void }) {
   const [boot, setBoot] = useState<BootInfo | null>(null);
   const [sessions, setSessions] = useState<SessionRow[]>([]);
+  // No speech model installed → the user would only discover the mandatory
+  // download when "Go live" fails. Surface it here, up front.
+  const [needsModel, setNeedsModel] = useState(false);
 
   useEffect(() => {
     invoke<BootInfo>("boot_info").then(setBoot).catch(() => {});
     invoke<SessionRow[]>("list_sessions")
       .then((s) => setSessions(s.filter((x) => x.status !== "archived")))
+      .catch(() => {});
+    invoke<{ installed: boolean }[]>("list_asr_models")
+      .then((rows) => setNeedsModel(rows.length > 0 && rows.every((r) => !r.installed)))
       .catch(() => {});
   }, []);
 
@@ -79,6 +85,36 @@ export function General({ onNavigate }: { onNavigate: (k: NavKey) => void }) {
           right one as the topic comes up, and tracks what you have covered.
         </p>
       </header>
+
+      {/* First-run setup nudge — only until a speech model is installed */}
+      {needsModel && (
+        <section
+          style={{
+            ...panel,
+            borderColor: "var(--assembled)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 16,
+            flexWrap: "wrap",
+          }}
+        >
+          <div>
+            <div style={{ fontSize: 15, fontWeight: 600 }}>🎙️ One setup step: download a speech model</div>
+            <p style={{ color: "var(--text-muted)", fontSize: 13.5, margin: "4px 0 0", maxWidth: 560, lineHeight: 1.5 }}>
+              Anchor needs an on-device speech model to hear your calls — about 680 MB, downloaded
+              once, then cached offline. Grab one before your first session.
+            </p>
+          </div>
+          <button
+            className="press"
+            onClick={() => onNavigate("settings")}
+            style={{ ...btn, borderColor: "var(--assembled)", color: "var(--assembled)" }}
+          >
+            Download a model
+          </button>
+        </section>
+      )}
 
       {/* Three steps — light interactive cards, mixed with the hero above */}
       <section>

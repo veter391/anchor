@@ -104,11 +104,17 @@ export function SessionDetail({ session, onBack }: { session: SessionRow; onBack
     try {
       await invoke("set_active_session", { sessionId: session.id });
       // Going live IS "start listening" — bind the session and start capture.
-      await invoke("start_audio").catch((e) => setErr(String(e)));
+      // Do NOT swallow a start_audio failure: if capture can't start (e.g. no
+      // speech model installed, or the mic is blocked), the session must NOT
+      // flip to "live" — that lied that we were listening when we were deaf.
+      await invoke("start_audio");
       setLive(true);
       setStatus("live");
     } catch (e) {
       setErr(String(e));
+      // Audio didn't start — unbind the session so the backend doesn't sit
+      // "live" against a call it isn't actually hearing.
+      await invoke("clear_active_session").catch(() => {});
     }
   };
   const cancelLive = async () => {

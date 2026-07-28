@@ -46,8 +46,9 @@ export function ConsentModal({ onAccept }: { onAccept: () => void }) {
             that you are taking notes.
           </li>
           <li>
-            📦 <b>Models download on first use</b> from Hugging Face, under their own licences
-            (including Google&apos;s Gemma terms for the embedding model).
+            📦 <b>Models download on first use</b> from Hugging Face (about 1 GB in total — the
+            speech model and the embedding model; an optional local assistant is extra), under
+            their own licences (including Google&apos;s Gemma terms for the embedding model).
           </li>
         </ul>
         <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>

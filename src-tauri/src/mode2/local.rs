@@ -19,10 +19,16 @@ use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
-/// One shared backend per process (llama.cpp requires a single init).
-fn backend() -> &'static LlamaBackend {
-    static BACKEND: OnceLock<LlamaBackend> = OnceLock::new();
-    BACKEND.get_or_init(|| LlamaBackend::init().expect("llama backend init"))
+/// One shared backend per process (llama.cpp requires a single init). Returns a
+/// clean error instead of panicking if init fails — it is reachable the first
+/// time a user runs the free local assistant, and a broken environment should
+/// surface as a message, not a crash. The (permanent) init result is cached.
+fn backend() -> Result<&'static LlamaBackend, String> {
+    static BACKEND: OnceLock<Result<LlamaBackend, String>> = OnceLock::new();
+    BACKEND
+        .get_or_init(|| LlamaBackend::init().map_err(|e| format!("local model engine failed to start: {e}")))
+        .as_ref()
+        .map_err(|e| e.clone())
 }
 
 struct Loaded {
@@ -45,7 +51,7 @@ impl LocalEngine {
             return Ok(());
         }
         let started = std::time::Instant::now();
-        let model = LlamaModel::load_from_file(backend(), path, &LlamaModelParams::default())
+        let model = LlamaModel::load_from_file(backend()?, path, &LlamaModelParams::default())
             .map_err(|e| format!("failed to load {id}: {e}"))?;
         tracing::info!(id, elapsed_s = started.elapsed().as_secs_f64(), "local model loaded");
         *guard = Some(Loaded {
@@ -102,7 +108,7 @@ impl LocalEngine {
             .with_n_threads(4)
             .with_n_threads_batch(4);
         let mut ctx = model
-            .new_context(backend(), ctx_params)
+            .new_context(backend()?, ctx_params)
             .map_err(|e| e.to_string())?;
 
         let tokens = model
