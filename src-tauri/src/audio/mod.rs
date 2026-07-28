@@ -332,6 +332,15 @@ fn worker_loop(
     tracing::debug!("audio worker exited");
 }
 
+/// A channel counts as a wiring problem only if it has produced NO live audio
+/// since the check began (`last_live_ms == 0`) and the startup grace has passed.
+/// Rolling silence is NOT death: loopback is silent for whole far-end turns and
+/// the mic is quiet while the user listens. `last_live_ms` is 0 until the first
+/// live sample (stored as `now_ms.max(1)`).
+fn channel_is_dead(last_live_ms: u64, now_ms: u64) -> bool {
+    last_live_ms == 0 && now_ms > DEAD_CHANNEL_SECS * 1000
+}
+
 /// Emits a health event whenever a channel's silence state changes.
 fn health_loop(
     app: tauri::AppHandle,
@@ -351,9 +360,7 @@ fn health_loop(
         // silence is normal on a real, turn-taking call, so treating it as death
         // fired a false "dead output" alarm on essentially every turn. `seen` is
         // 0 until the first live sample (stored as now_ms.max(1)), so 0 == never.
-        let dead = |seen: &AtomicU64| {
-            seen.load(Ordering::SeqCst) == 0 && now_ms > DEAD_CHANNEL_SECS * 1000
-        };
+        let dead = |seen: &AtomicU64| channel_is_dead(seen.load(Ordering::SeqCst), now_ms);
         let health = ChannelHealth {
             them_silent: dead(&them_seen),
             me_silent: dead(&me_seen),
@@ -391,5 +398,21 @@ mod tests {
         let them = "what are your salary expectations for this role";
         let me = "my salary target is competitive and flexible";
         assert!(text_overlap(me, them) < ECHO_OVERLAP);
+    }
+
+    #[test]
+    fn rolling_silence_is_not_a_dead_channel() {
+        // Regression (audit 2026-07-28): the old check was `now_ms - seen > T`,
+        // which flagged a channel that spoke once and then went quiet — i.e. a
+        // normal far-end turn — as a dead output on EVERY turn.
+        let grace = DEAD_CHANNEL_SECS * 1000;
+        // Truly never-live, past the grace → dead (the real wiring problem).
+        assert!(channel_is_dead(0, grace + 1));
+        // Never-live but still within the startup grace → not yet flagged.
+        assert!(!channel_is_dead(0, grace - 1));
+        // Produced audio early (seen != 0), then silent for a long time: MUST
+        // NOT be dead. The old rolling-silence logic wrongly flagged this.
+        assert!(!channel_is_dead(1, grace + 60_000));
+        assert!(!channel_is_dead(500, 10 * grace));
     }
 }

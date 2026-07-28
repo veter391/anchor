@@ -267,3 +267,62 @@ fn truncate(s: &str, n: usize) -> String {
         None => s.to_string(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mode2::provider::AssemblyPrompt;
+
+    fn sample_prompt() -> AssemblyPrompt {
+        AssemblyPrompt {
+            question: "why are you leaving your own company".into(),
+            material: "- founder, wants depth".into(),
+            bridges: vec![],
+            style: "default".into(),
+            max_bullets: crate::mode2::MAX_BULLETS,
+        }
+    }
+
+    #[test]
+    fn custom_json_object_names_the_json_keys() {
+        // Regression (audit 2026-07-28): a custom OpenAI-compatible endpoint runs
+        // in json_object mode (no schema), so the ONLY key guidance is the prompt.
+        // The base system prompt names neither JSON key, so a model could emit
+        // e.g. {"bullets":[...]} and the `Points` parser (which needs "points")
+        // failed — the custom provider never produced a card.
+        let prompt = sample_prompt();
+        // The bug precondition: the base prompt does NOT name the JSON key.
+        assert!(
+            !prompt.system().contains("\"points\""),
+            "base prompt should not already name the JSON key"
+        );
+        // The fix: custom (json_object) spells out the exact shape.
+        let custom = OpenAiCompat::custom("http://example".into(), "k".into(), "m".into());
+        assert!(matches!(custom.schema_mode, SchemaMode::JsonObject));
+        let sys = custom.system_for(&prompt);
+        assert!(sys.contains("\"points\""), "json_object must name the \"points\" key");
+        assert!(sys.contains("\"title\""), "json_object must name the \"title\" key");
+    }
+
+    #[test]
+    fn strict_schema_sends_the_prompt_unchanged() {
+        // Under a strict json_schema the keys are pinned by the schema, so the
+        // system prompt is sent as-is — no redundant, token-wasting shape line.
+        let prompt = sample_prompt();
+        let mut p = OpenAiCompat::custom("http://example".into(), "k".into(), "m".into());
+        p.schema_mode = SchemaMode::StrictJsonSchema;
+        assert_eq!(p.system_for(&prompt), prompt.system());
+    }
+
+    #[test]
+    fn strict_schema_allows_up_to_max_bullets() {
+        // Regression (audit 2026-07-28): the API schema capped `points` at 6
+        // while the app allows MAX_BULLETS (8), silently truncating broad answers
+        // on the API path only.
+        let mut p = OpenAiCompat::custom("http://example".into(), "k".into(), "m".into());
+        p.schema_mode = SchemaMode::StrictJsonSchema;
+        let rf = p.response_format();
+        let max = rf["json_schema"]["schema"]["properties"]["points"]["maxItems"].as_u64();
+        assert_eq!(max, Some(crate::mode2::MAX_BULLETS as u64));
+    }
+}
