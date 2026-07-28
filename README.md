@@ -101,6 +101,7 @@ pnpm tauri dev
 
 - 📐 [Architecture](docs/architecture.md) — how the capture → recognition → match → overlay pipeline works
 - 🧠 [Models](docs/models.md) — the on-device speech, retrieval, and assembly models
+- 📦 [Distribution](docs/distribution.md) — the portable folder, what's inside it, and first run
 - 🔒 [Security & privacy](SECURITY.md) — what stays local, and the only three network egress points
 - 🤝 [Contributing](CONTRIBUTING.md) — build from source and the review gate
 
