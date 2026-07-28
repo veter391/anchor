@@ -27,10 +27,12 @@ every non-system DLL the app loads is present):
   `vcruntime140*.dll`, `concrt140.dll`, `vccorlib140.dll`, `vcomp140.dll`
   (bundled so you do **not** need to install the VC++ Redistributable separately)
 
-The web view uses the **WebView2 runtime**, a standard component of Windows 11
-(and available on Windows 10). The speech, embedding and assembly **models are
-not bundled** — they download on first use into `data/`, with an integrity
-check, then cache offline (see [models.md](models.md)).
+The web view uses the **WebView2 runtime**. It ships with Windows 11; on an
+older Windows 10 machine that doesn't have it, install Microsoft's free
+"Evergreen WebView2 Runtime" once (a signed Microsoft download). The speech,
+embedding and assembly **models are not bundled** — they download on first use
+into `data/`, with an integrity check, then cache offline (see
+[models.md](models.md)).
 
 To assemble that folder reproducibly after a release build
 (`build-env.bat pnpm tauri build --no-bundle`), run

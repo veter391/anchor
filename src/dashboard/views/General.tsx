@@ -29,7 +29,7 @@ const STEPS = [
     n: "2",
     emoji: "✍️",
     title: "Build cards",
-    body: "Turn what you know into anchor cards — six keywords, never sentences. Or drop in raw notes and let Anchor draft them.",
+    body: "Turn what you know into anchor cards — six keywords, never sentences. Paste ready cards, or let the optional local assistant draft them from raw notes.",
     action: "Go to cards",
     go: "cards" as NavKey,
   },
