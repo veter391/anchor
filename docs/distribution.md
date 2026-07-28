@@ -32,6 +32,12 @@ The web view uses the **WebView2 runtime**, a standard component of Windows 11
 not bundled** — they download on first use into `data/`, with an integrity
 check, then cache offline (see [models.md](models.md)).
 
+To assemble that folder reproducibly after a release build
+(`build-env.bat pnpm tauri build --no-bundle`), run
+[`scripts/package-portable.ps1`](../scripts/package-portable.ps1) — it gathers
+the executable, the speech-runtime DLLs and the VC++ runtime into one staged
+folder (the exact self-contained set, verified with a dependency-closure check).
+
 ## First run
 
 1. Extract the folder and run `Anchor.exe`.
