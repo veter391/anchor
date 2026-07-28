@@ -4,9 +4,11 @@
 //! everything, nothing is scattered across the machine. Ships as an
 //! extract-and-run folder.
 //!
-//! Note for Phase 8 ship: harden the folder ACL to the current user (a
-//! portable folder in a shared location would otherwise be world-readable) —
-//! tracked, not done here (single-user dev today). See 10_RESEARCH_LOG.
+//! The portable folder holds the transcript DB and downloaded models, so on
+//! Windows its ACL is restricted to the current user + SYSTEM + Administrators
+//! (see `harden_data_dir_acl`) — otherwise, extracted to a shared location, it
+//! would inherit a world-readable ACL and expose the transcripts to other
+//! accounts on the machine.
 
 use std::path::{Path, PathBuf};
 
@@ -36,6 +38,75 @@ pub fn cache_dir() -> PathBuf {
     let _ = std::fs::create_dir_all(&dir);
     dir
 }
+
+/// Restrict the portable data folder to the current user (Windows). The folder
+/// carries the transcript DB and downloaded models; extracted to a shared
+/// location it would inherit a world-readable ACL. Runs ONCE (a marker guards
+/// it), best-effort — a failure logs and leaves the folder untouched, never
+/// blocks startup. Uses `icacls` (the canonical Windows ACL tool; the native
+/// `SetNamedSecurityInfo` path is ~80 lines of unsafe for a one-shot op).
+///
+/// Order matters: the current user often has access ONLY through the inherited
+/// `Users`/`Authenticated Users` groups, so we grant the user an EXPLICIT full
+/// ACE *before* removing inheritance — otherwise stripping the broad groups
+/// would lock the user out of their own data (verified: it does). SYSTEM +
+/// Administrators are kept so backup/admin recovery still works, and the
+/// inheritable (OI)(CI) flags mean later-downloaded models inherit the same
+/// restriction. Once hardened, nothing broadly-readable remains.
+#[cfg(windows)]
+pub fn harden_data_dir_acl() {
+    harden_acl(&data_dir());
+}
+
+#[cfg(windows)]
+fn harden_acl(dir: &Path) {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+    let marker = dir.join(".acl-hardened");
+    if marker.exists() {
+        return;
+    }
+    // Without a resolvable current-user name we cannot grant the explicit ACE,
+    // so we skip rather than risk a lock-out.
+    let user = match std::env::var("USERNAME") {
+        Ok(u) if !u.trim().is_empty() => u,
+        _ => {
+            tracing::warn!("USERNAME unset; skipping data-folder ACL hardening");
+            return;
+        }
+    };
+    let path = dir.to_string_lossy().to_string();
+    let result = std::process::Command::new("icacls")
+        .args([
+            path.as_str(),
+            "/inheritance:r", // drop inherited (world-readable) ACEs
+            "/grant:r",
+            &format!("{user}:(OI)(CI)F"), // current user — GRANTED FIRST
+            "*S-1-5-18:(OI)(CI)F",        // SYSTEM
+            "*S-1-5-32-544:(OI)(CI)F",    // BUILTIN\Administrators
+            "/t",
+            "/c",
+            "/q",
+        ])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output();
+    match result {
+        Ok(o) if o.status.success() => {
+            let _ = std::fs::write(&marker, b"1");
+            tracing::info!("restricted the data folder ACL to the current user");
+        }
+        Ok(o) => tracing::warn!(
+            code = ?o.status.code(),
+            "icacls hardening did not succeed; leaving folder permissions unchanged"
+        ),
+        Err(e) => tracing::warn!(error = %e, "could not run icacls to harden the data folder"),
+    }
+}
+
+/// No-op off Windows (portable-folder ACL hardening is Windows-specific).
+#[cfg(not(windows))]
+pub fn harden_data_dir_acl() {}
 
 /// Recursively copy a directory's contents. Does NOT follow symlinks/junctions
 /// (audit 2026-07-23: `is_dir()` follows them, letting a planted link redirect
@@ -131,5 +202,34 @@ pub fn migrate_if_needed(old_app_data: Option<&Path>, old_cache_candidates: &[Pa
             let _ = std::fs::write(&marker, b"1");
             tracing::info!("migrated models into the portable folder");
         });
+    }
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hardening_never_locks_the_owner_out() {
+        // The load-bearing safety property: restricting the ACL must NOT remove
+        // the current user's own access (that would lock them out of their
+        // transcripts). Project-local temp dir (OWNER-RULES §9: not the OS temp).
+        let dir = PathBuf::from("target").join(format!("acl-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("before.txt"), b"x").unwrap();
+
+        harden_acl(&dir);
+
+        // Still writable by us after hardening — the anti-lockout guarantee.
+        std::fs::write(dir.join("after.txt"), b"y")
+            .expect("owner must still be able to write after ACL hardening");
+        assert!(dir.join(".acl-hardened").exists(), "success marker written");
+
+        // Reset the ACL so the dir can be cleaned up, then remove it.
+        let _ = std::process::Command::new("icacls")
+            .args([dir.to_string_lossy().as_ref(), "/reset", "/t", "/c", "/q"])
+            .output();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

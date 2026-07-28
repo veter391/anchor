@@ -965,6 +965,9 @@ pub fn run() {
                 old_app_data.as_deref(),
                 &[cwd.join(".fastembed_cache"), cwd.join("src-tauri/.fastembed_cache")],
             );
+            // Lock the portable folder to this user (transcripts + models live
+            // here). Once, best-effort; later-downloaded models inherit the ACL.
+            paths::harden_data_dir_acl();
             let data_dir = paths::data_dir();
             let db_path = data_dir.join("anchor.db");
             let conn = db::open_and_migrate(&db_path)?;
