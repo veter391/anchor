@@ -751,4 +751,30 @@ mod tests {
         assert_eq!(session_language(&conn, "s2"), None); // blank → auto-detect
         assert_eq!(session_language(&conn, "missing"), None); // unknown session
     }
+
+    #[test]
+    fn wipe_corpus_also_clears_card_events() {
+        // Regression (audit 2026-07-28): card_events.card_id has no FK to cards,
+        // so deleting the cards did not cascade to it — a corpus wipe left
+        // orphaned match-log rows. Plain stand-ins for the tables wipe touches
+        // (the real bullet_vec/card_vec/card_fts are vec0/fts5, needing the
+        // sqlite-vec extension — not required to exercise the DELETE batch).
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE cards (id TEXT PRIMARY KEY);
+             CREATE TABLE bullets (id TEXT PRIMARY KEY);
+             CREATE TABLE bullet_vec (bullet_id TEXT);
+             CREATE TABLE card_vec (card_id TEXT);
+             CREATE TABLE card_fts (card_id TEXT);
+             CREATE TABLE card_events (id INTEGER PRIMARY KEY, card_id TEXT);
+             INSERT INTO cards VALUES ('c1');
+             INSERT INTO card_events (card_id) VALUES ('c1'), ('c1');",
+        )
+        .unwrap();
+        wipe_corpus(&conn).unwrap();
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM card_events", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0, "wipe_corpus must clear card_events, leaving no orphans");
+    }
 }
