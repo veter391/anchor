@@ -29,6 +29,12 @@ const ENDPOINT_SILENCE_MS: usize = 1200;
 const MAX_UTTERANCE_S: usize = 20;
 /// Don't decode until there's at least this much audio (avoids noise on a syllable).
 const MIN_DECODE_MS: usize = 300;
+/// Stop the mid-utterance re-decodes once the buffer passes this. Re-decoding the
+/// whole (growing) buffer every REDECODE_MS is O(n^2) over a long run-on and, on
+/// the weak-CPU path this fallback exists for, makes the worker fall behind real
+/// time. Past the cap the live partial simply pauses; the phrase boundary /
+/// MAX_UTTERANCE_S still commits the final, so no audio is lost.
+const REDECODE_CAP_S: usize = 8;
 /// RMS below this over a chunk counts as silence.
 const SILENCE_RMS: f32 = 1e-3;
 
@@ -116,6 +122,7 @@ impl ParakeetAsr {
         let max_len = sr * MAX_UTTERANCE_S;
         let redecode = sr * REDECODE_MS / 1000;
         let min_len = sr * MIN_DECODE_MS / 1000;
+        let redecode_cap = sr * REDECODE_CAP_S;
 
         // Phrase boundary (or a run-on hitting the cap): commit and reset.
         if ch.trailing_silence >= endpoint || ch.buffer.len() >= max_len {
@@ -128,8 +135,10 @@ impl ParakeetAsr {
             };
         }
 
-        // Mid-utterance: re-decode and emit only the newly-agreed prefix.
-        if ch.since_decode >= redecode && ch.buffer.len() >= min_len {
+        // Mid-utterance: re-decode and emit only the newly-agreed prefix — but
+        // only while the buffer is small enough that re-decoding it is cheap.
+        if ch.since_decode >= redecode && ch.buffer.len() >= min_len && ch.buffer.len() <= redecode_cap
+        {
             ch.since_decode = 0;
             let hyp = self.decode(&ch.buffer, sample_rate, &ch.language);
             let stable = agreed_prefix(&ch.prev_hyp, &hyp);
