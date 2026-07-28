@@ -58,14 +58,12 @@ fn is_blocked_host(host: &str) -> bool {
     }
 }
 
-/// Resolve `host:port` and return a pinned address to connect to, or `Err` if
-/// resolution fails, yields nothing, or ANY resolved IP is blocked. Rejecting
-/// on *any* bad IP (not just the one we'd pick) defeats round-robin records that
-/// mix a public and an internal address. Pinning the returned `SocketAddr` back
-/// into the client means reqwest connects to exactly the IP we vetted, closing
-/// the DNS-rebinding window between this check and the actual connect.
-/// Blocking `getaddrinfo` runs on the blocking pool so the async runtime is free.
-async fn resolve_and_pin(host: &str, port: u16) -> Result<SocketAddr, ()> {
+/// Friendly early check: reject the entry host before the fetch if it is a
+/// blocked literal or resolves to any blocked IP (rejecting on *any* bad IP
+/// defeats round-robin records mixing a public and an internal address). The
+/// actual connection-time defence for every hop is `VettingResolver` below;
+/// this just turns an obviously-bad pasted URL into a clear message up front.
+async fn ensure_host_allowed(host: &str, port: u16) -> Result<(), ()> {
     if is_blocked_host(host) {
         return Err(());
     }
@@ -79,25 +77,38 @@ async fn resolve_and_pin(host: &str, port: u16) -> Result<SocketAddr, ()> {
     if addrs.is_empty() || addrs.iter().any(|a| is_blocked_ip(&a.ip())) {
         return Err(());
     }
-    Ok(addrs[0])
+    Ok(())
 }
 
-/// Synchronous variant for the redirect policy (which is a sync closure): block
-/// a hop whose host is a blocked literal OR resolves to any blocked IP. The
-/// lookup is a brief, OS-cached `getaddrinfo`; redirects are rare and capped, so
-/// running it inline here is acceptable. Residual per-hop rebinding on redirects
-/// is not pinned (reqwest gives no hook for it), which is why the entry host —
-/// the attacker-controlled one — is the pinned one.
-fn redirect_blocked(host: &str, port: u16) -> bool {
-    if is_blocked_host(host) {
-        return true;
-    }
-    match (host, port).to_socket_addrs() {
-        Ok(addrs) => {
-            let addrs: Vec<_> = addrs.collect();
-            addrs.is_empty() || addrs.iter().any(|a| is_blocked_ip(&a.ip()))
-        }
-        Err(_) => true, // cannot resolve → fail closed
+/// DNS resolver for the pre-flight client that drops every blocked (loopback /
+/// private / link-local / ULA / CGNAT / …) address at resolution time — for
+/// EVERY connection the client makes, the entry URL and every redirect hop.
+/// This closes the DNS-rebinding window on redirects, which a per-hop string
+/// check could not: reqwest only ever connects to an address this resolver
+/// already vetted, so a hop that resolves to an internal IP yields no address
+/// and the connection simply fails.
+struct VettingResolver;
+
+impl reqwest::dns::Resolve for VettingResolver {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        let host = name.as_str().to_string();
+        Box::pin(async move {
+            let resolved = tokio::task::spawn_blocking(move || {
+                (host.as_str(), 0u16).to_socket_addrs().map(|it| it.collect::<Vec<_>>())
+            })
+            .await;
+            let safe: Vec<SocketAddr> = match resolved {
+                Ok(Ok(addrs)) => addrs.into_iter().filter(|a| !is_blocked_ip(&a.ip())).collect(),
+                _ => Vec::new(),
+            };
+            if safe.is_empty() {
+                Err::<reqwest::dns::Addrs, _>(
+                    "host resolves only to blocked or unreachable addresses".into(),
+                )
+            } else {
+                Ok(Box::new(safe.into_iter()) as reqwest::dns::Addrs)
+            }
+        })
     }
 }
 
@@ -242,9 +253,9 @@ pub async fn preflight_research(
     let port = parsed
         .port_or_known_default()
         .ok_or("That does not look like a valid URL.".to_string())?;
-    // Resolve the entry host up front and pin the vetted IP; a name that maps to
-    // an internal address (the SSRF bypass a string check misses) is rejected here.
-    let pinned = resolve_and_pin(&host, port).await.map_err(|_| {
+    // Friendly early rejection of an obviously-internal entry host; the
+    // connection-time defence for every hop is VettingResolver below.
+    ensure_host_allowed(&host, port).await.map_err(|_| {
         "That host is not allowed for research (local/private address).".to_string()
     })?;
 
@@ -262,20 +273,10 @@ pub async fn preflight_research(
     let client = reqwest::Client::builder()
         .user_agent("Anchor/0.6 (pre-flight research)")
         .timeout(std::time::Duration::from_secs(20))
-        .resolve(&host, pinned)
-        .redirect(reqwest::redirect::Policy::custom(|attempt| {
-            if attempt.previous().len() >= 4 {
-                return attempt.error("too many redirects");
-            }
-            let u = attempt.url();
-            let host = u.host_str().unwrap_or("");
-            let port = u.port_or_known_default().unwrap_or(80);
-            if redirect_blocked(host, port) {
-                attempt.stop()
-            } else {
-                attempt.follow()
-            }
-        }))
+        // Every connection (entry + each redirect hop) resolves through the
+        // vetting resolver, so no hop can be rebound to an internal address.
+        .dns_resolver(std::sync::Arc::new(VettingResolver))
+        .redirect(reqwest::redirect::Policy::limited(4))
         .build()
         .map_err(|e| e.to_string())?;
     let resp = client
