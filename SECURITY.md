@@ -28,7 +28,7 @@ Nothing leaves your machine except these three, each explicit in the UI:
 
 - Preferred: use GitHub's private vulnerability reporting on this repository
   (the **Security** tab → *Report a vulnerability*).
-- Or email **<CONTACT EMAIL>**.
+- Or email **anchor@shypot.com**.
 
 Please include steps to reproduce and the impact you observed. We aim to
 acknowledge reports promptly and will keep you updated as we work on a fix.
