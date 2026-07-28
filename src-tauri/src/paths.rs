@@ -77,6 +77,14 @@ fn harden_acl(dir: &Path) {
         }
     };
     let path = dir.to_string_lossy().to_string();
+    // Directory only — deliberately NOT `/t`. The `(OI)(CI)` flags make these
+    // ACEs INHERITABLE, so files created afterwards get an effective ACE. But
+    // applying `(OI)(CI)` to an already-existing FILE via `/t` yields an
+    // inherit-only ACE that grants that file nothing — it bricks it (found the
+    // hard way: it left the freshly-migrated anchor.db with an empty DACL, so
+    // SQLite could no longer open it). We run BEFORE migration on an empty
+    // folder (see the setup hook), so everything created/copied after simply
+    // inherits — no existing file is ever touched.
     let result = std::process::Command::new("icacls")
         .args([
             path.as_str(),
@@ -85,8 +93,6 @@ fn harden_acl(dir: &Path) {
             &format!("{user}:(OI)(CI)F"), // current user — GRANTED FIRST
             "*S-1-5-18:(OI)(CI)F",        // SYSTEM
             "*S-1-5-32-544:(OI)(CI)F",    // BUILTIN\Administrators
-            "/t",
-            "/c",
             "/q",
         ])
         .creation_flags(CREATE_NO_WINDOW)
@@ -210,20 +216,33 @@ mod tests {
     use super::*;
 
     #[test]
-    fn hardening_never_locks_the_owner_out() {
-        // The load-bearing safety property: restricting the ACL must NOT remove
-        // the current user's own access (that would lock them out of their
-        // transcripts). Project-local temp dir (OWNER-RULES §9: not the OS temp).
+    fn hardening_keeps_files_accessible_to_the_owner() {
+        // Two properties, both load-bearing:
+        //  1. A file that ALREADY exists when hardening runs must stay openable
+        //     read+write. (Regression guard: applying inheritance flags with
+        //     `/t` gave existing files an inherit-only, access-nothing DACL and
+        //     bricked the migrated anchor.db — SQLite could not open it.)
+        //  2. A file created AFTER hardening must inherit access.
+        // Project-local temp dir (OWNER-RULES §9: not the OS temp).
+        use std::fs::OpenOptions;
         let dir = PathBuf::from("target").join(format!("acl-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("before.txt"), b"x").unwrap();
+        let existing = dir.join("existing.bin");
+        std::fs::write(&existing, b"db-like").unwrap();
 
         harden_acl(&dir);
 
-        // Still writable by us after hardening — the anti-lockout guarantee.
-        std::fs::write(dir.join("after.txt"), b"y")
-            .expect("owner must still be able to write after ACL hardening");
+        // (1) The pre-existing file opens read+write, exactly as SQLite opens
+        // the DB. This is what actually broke before the /t was removed.
+        OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&existing)
+            .expect("a file present before hardening must stay openable (not bricked)");
+        // (2) A new file inherits access.
+        std::fs::write(dir.join("after.bin"), b"y")
+            .expect("owner must still be able to create files after hardening");
         assert!(dir.join(".acl-hardened").exists(), "success marker written");
 
         // Reset the ACL so the dir can be cleaned up, then remove it.

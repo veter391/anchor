@@ -961,13 +961,17 @@ pub fn run() {
             // so upgrading users keep their data.
             let old_app_data = app.path().app_data_dir().ok();
             let cwd = std::env::current_dir().unwrap_or_default();
+            // Lock the portable folder to this user BEFORE anything is written
+            // into it (transcripts + models live here). Hardening the still-empty
+            // folder means the DB, migrated files and downloaded models all
+            // inherit the restricted ACL — and no existing file is ever touched
+            // (applying inheritance flags to an existing file bricks it). Once,
+            // best-effort.
+            paths::harden_data_dir_acl();
             paths::migrate_if_needed(
                 old_app_data.as_deref(),
                 &[cwd.join(".fastembed_cache"), cwd.join("src-tauri/.fastembed_cache")],
             );
-            // Lock the portable folder to this user (transcripts + models live
-            // here). Once, best-effort; later-downloaded models inherit the ACL.
-            paths::harden_data_dir_acl();
             let data_dir = paths::data_dir();
             let db_path = data_dir.join("anchor.db");
             let conn = db::open_and_migrate(&db_path)?;
