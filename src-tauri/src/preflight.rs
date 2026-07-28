@@ -7,22 +7,97 @@ use crate::embed::Embedder;
 use crate::{cards, live, store, Db};
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
+use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::sync::Arc;
 use tauri::Manager;
 
-/// Reject loopback / private / link-local hosts so a pasted (or redirected) URL
-/// cannot make the app fetch internal services or cloud metadata (SSRF defense).
+/// True for any address a pasted/redirected URL must not reach: loopback,
+/// private, link-local, unique-local, CGNAT, broadcast, and the IPv4 forms
+/// smuggled inside IPv6 (`::ffff:169.254.169.254` and friends). This is the
+/// real SSRF predicate — hostname checks below funnel every resolved IP here.
+fn is_blocked_ip(ip: &IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => {
+            v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local() // 169.254/16 — incl. cloud metadata 169.254.169.254
+                || v4.is_unspecified()
+                || v4.is_broadcast()
+                || v4.is_documentation()
+                // Carrier-grade NAT 100.64.0.0/10 (RFC 6598) — treated as internal.
+                || (v4.octets()[0] == 100 && (v4.octets()[1] & 0xc0) == 0x40)
+        }
+        IpAddr::V6(v6) => {
+            if v6.is_loopback() || v6.is_unspecified() {
+                return true;
+            }
+            // Any IPv4 embedded in IPv6 (mapped ::ffff:a.b.c.d or compat ::a.b.c.d)
+            // gets the full v4 ruleset — otherwise ::ffff:127.0.0.1 slips through.
+            if let Some(v4) = v6.to_ipv4() {
+                return is_blocked_ip(&IpAddr::V4(v4));
+            }
+            let seg = v6.segments();
+            // Unique-local fc00::/7 (is_unique_local is still unstable) and
+            // link-local unicast fe80::/10.
+            (seg[0] & 0xfe00) == 0xfc00 || (seg[0] & 0xffc0) == 0xfe80
+        }
+    }
+}
+
+/// Cheap string gate: literal `localhost` and any host that is *already* a
+/// literal IP. Non-IP hostnames pass here and are caught later by DNS
+/// resolution — a name is not safe just because it isn't a literal address.
 fn is_blocked_host(host: &str) -> bool {
     let h = host.trim_start_matches('[').trim_end_matches(']').to_ascii_lowercase();
     if h == "localhost" || h.ends_with(".localhost") {
         return true;
     }
-    match h.parse::<std::net::IpAddr>() {
-        Ok(std::net::IpAddr::V4(v4)) => {
-            v4.is_loopback() || v4.is_private() || v4.is_link_local() || v4.is_unspecified()
+    match h.parse::<IpAddr>() {
+        Ok(ip) => is_blocked_ip(&ip),
+        Err(_) => false, // a name — decided by resolve_and_pin / redirect_blocked
+    }
+}
+
+/// Resolve `host:port` and return a pinned address to connect to, or `Err` if
+/// resolution fails, yields nothing, or ANY resolved IP is blocked. Rejecting
+/// on *any* bad IP (not just the one we'd pick) defeats round-robin records that
+/// mix a public and an internal address. Pinning the returned `SocketAddr` back
+/// into the client means reqwest connects to exactly the IP we vetted, closing
+/// the DNS-rebinding window between this check and the actual connect.
+/// Blocking `getaddrinfo` runs on the blocking pool so the async runtime is free.
+async fn resolve_and_pin(host: &str, port: u16) -> Result<SocketAddr, ()> {
+    if is_blocked_host(host) {
+        return Err(());
+    }
+    let hp = (host.to_string(), port);
+    let addrs = tokio::task::spawn_blocking(move || {
+        hp.to_socket_addrs().map(|it| it.collect::<Vec<_>>())
+    })
+    .await
+    .map_err(|_| ())?
+    .map_err(|_| ())?;
+    if addrs.is_empty() || addrs.iter().any(|a| is_blocked_ip(&a.ip())) {
+        return Err(());
+    }
+    Ok(addrs[0])
+}
+
+/// Synchronous variant for the redirect policy (which is a sync closure): block
+/// a hop whose host is a blocked literal OR resolves to any blocked IP. The
+/// lookup is a brief, OS-cached `getaddrinfo`; redirects are rare and capped, so
+/// running it inline here is acceptable. Residual per-hop rebinding on redirects
+/// is not pinned (reqwest gives no hook for it), which is why the entry host —
+/// the attacker-controlled one — is the pinned one.
+fn redirect_blocked(host: &str, port: u16) -> bool {
+    if is_blocked_host(host) {
+        return true;
+    }
+    match (host, port).to_socket_addrs() {
+        Ok(addrs) => {
+            let addrs: Vec<_> = addrs.collect();
+            addrs.is_empty() || addrs.iter().any(|a| is_blocked_ip(&a.ip()))
         }
-        Ok(std::net::IpAddr::V6(v6)) => v6.is_loopback() || v6.is_unspecified(),
-        Err(_) => false,
+        Err(_) => true, // cannot resolve → fail closed
     }
 }
 
@@ -160,9 +235,18 @@ pub async fn preflight_research(
         return Err("Paste a full link starting with http:// or https://".into());
     }
     let parsed = reqwest::Url::parse(&url).map_err(|_| "That does not look like a valid URL.".to_string())?;
-    if parsed.host_str().map(is_blocked_host).unwrap_or(true) {
-        return Err("That host is not allowed for research (local/private address).".into());
-    }
+    let host = parsed
+        .host_str()
+        .ok_or("That does not look like a valid URL.".to_string())?
+        .to_string();
+    let port = parsed
+        .port_or_known_default()
+        .ok_or("That does not look like a valid URL.".to_string())?;
+    // Resolve the entry host up front and pin the vetted IP; a name that maps to
+    // an internal address (the SSRF bypass a string check misses) is rejected here.
+    let pinned = resolve_and_pin(&host, port).await.map_err(|_| {
+        "That host is not allowed for research (local/private address).".to_string()
+    })?;
 
     // Snapshot the LLM provider under a short lock (generation is long).
     let choice = {
@@ -178,13 +262,18 @@ pub async fn preflight_research(
     let client = reqwest::Client::builder()
         .user_agent("Anchor/0.6 (pre-flight research)")
         .timeout(std::time::Duration::from_secs(20))
+        .resolve(&host, pinned)
         .redirect(reqwest::redirect::Policy::custom(|attempt| {
             if attempt.previous().len() >= 4 {
                 return attempt.error("too many redirects");
             }
-            match attempt.url().host_str() {
-                Some(h) if is_blocked_host(h) => attempt.stop(),
-                _ => attempt.follow(),
+            let u = attempt.url();
+            let host = u.host_str().unwrap_or("");
+            let port = u.port_or_known_default().unwrap_or(80);
+            if redirect_blocked(host, port) {
+                attempt.stop()
+            } else {
+                attempt.follow()
             }
         }))
         .build()
@@ -295,6 +384,34 @@ mod tests {
         }
         for h in ["example.com", "en.wikipedia.org", "8.8.8.8"] {
             assert!(!is_blocked_host(h), "{h} should be allowed");
+        }
+    }
+
+    #[test]
+    fn ip_predicate_covers_v6_and_edge_ranges() {
+        let blocked = [
+            "127.0.0.1",
+            "10.1.2.3",
+            "172.16.0.1",
+            "192.168.0.1",
+            "169.254.169.254",   // cloud metadata
+            "100.64.0.1",        // CGNAT
+            "255.255.255.255",   // broadcast
+            "::1",               // v6 loopback
+            "fc00::1",           // unique-local
+            "fd12:3456::1",      // unique-local
+            "fe80::1",           // link-local
+            "::ffff:127.0.0.1",  // v4-mapped loopback
+            "::ffff:169.254.169.254", // v4-mapped metadata
+        ];
+        for s in blocked {
+            let ip: IpAddr = s.parse().unwrap();
+            assert!(is_blocked_ip(&ip), "{s} should be blocked");
+        }
+        let allowed = ["8.8.8.8", "1.1.1.1", "2606:4700:4700::1111", "93.184.216.34"];
+        for s in allowed {
+            let ip: IpAddr = s.parse().unwrap();
+            assert!(!is_blocked_ip(&ip), "{s} should be allowed");
         }
     }
 }

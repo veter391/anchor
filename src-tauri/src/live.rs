@@ -35,6 +35,12 @@ pub struct LiveState {
     /// Bumped by reset_live; an in-flight assembly from a previous epoch
     /// must not push its stale card onto the freshly-reset overlay.
     mode2_epoch: std::sync::atomic::AtomicU64,
+    /// True while an assembled/panic card is covering the matched card. The
+    /// match engine's `current_card` does NOT change when Mode-2 fires, so once
+    /// the engine regains confidence in the *same* card it returns `Stay` and
+    /// emits nothing — leaving the panic card stuck on screen. This flag lets a
+    /// `Stay` (or `Jump`) know it must bring the real card back.
+    overlay_off_card: AtomicBool,
 }
 
 struct Windows {
@@ -57,6 +63,7 @@ impl Default for LiveState {
             mode2_inflight: AtomicBool::new(false),
             mode2_last_q: Mutex::new(String::new()),
             mode2_epoch: std::sync::atomic::AtomicU64::new(0),
+            overlay_off_card: AtomicBool::new(false),
         }
     }
 }
@@ -145,6 +152,7 @@ pub fn reset_live(
     lock_or_recover(&live.engine).reset();
     live.mode2_inflight.store(false, Ordering::SeqCst);
     live.mode2_epoch.fetch_add(1, Ordering::SeqCst);
+    live.overlay_off_card.store(false, Ordering::SeqCst);
     lock_or_recover(&live.mode2_last_q).clear();
     // Clear the ACTIVE session's live rows so a re-run doesn't accumulate
     // duplicate coverage/event rows (coverage is sticky in memory; the DB is
@@ -273,6 +281,7 @@ fn reset_engine(live: &LiveState) {
     lock_or_recover(&live.engine).reset();
     live.mode2_inflight.store(false, Ordering::SeqCst);
     live.mode2_epoch.fetch_add(1, Ordering::SeqCst);
+    live.overlay_off_card.store(false, Ordering::SeqCst);
     lock_or_recover(&live.mode2_last_q).clear();
 }
 
@@ -541,13 +550,33 @@ fn tick(app: &tauri::AppHandle) -> Result<(), String> {
                     )
                     .map_err(|e| e.to_string())?;
                     jumped = Some(card);
+                    // A real card is going on screen: dismiss any panic/assembled
+                    // card and supersede an in-flight assembly so it can't clobber
+                    // this jump when it lands.
+                    if live.overlay_off_card.swap(false, Ordering::SeqCst) {
+                        live.mode2_epoch.fetch_add(1, Ordering::SeqCst);
+                    }
                 }
             }
             Decision::NoConfidence => {
                 no_confidence = true;
                 maybe_assemble(app, &live, &conn, &them_text, &session);
             }
-            Decision::Stay => {}
+            Decision::Stay => {
+                // The engine is confident in the SAME card again. If a panic/
+                // assembled card is currently covering it, bring the real card
+                // back (Stay emits nothing on its own) and cancel any pending
+                // assembly for the now-resolved question.
+                if live.overlay_off_card.swap(false, Ordering::SeqCst) {
+                    live.mode2_epoch.fetch_add(1, Ordering::SeqCst);
+                    let cur = lock_or_recover(&live.engine).current_card().map(String::from);
+                    if let Some(cid) = cur {
+                        if let Some(card) = store::get_card(&conn, &cid)? {
+                            jumped = Some(card);
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -685,8 +714,11 @@ fn maybe_assemble(
     live.mode2_inflight.store(true, Ordering::SeqCst);
     *lock_or_recover(&live.mode2_last_q) = q.to_string();
 
-    // Panic card instantly, as the filler while assembly runs.
+    // Panic card instantly, as the filler while assembly runs. From now the
+    // overlay shows something other than the matched card, until a Jump/Stay
+    // brings the real card back (see LiveState::overlay_off_card).
     let panic = crate::mode2::panic_card();
+    live.overlay_off_card.store(true, Ordering::SeqCst);
     app.emit_to("overlay", "card:assembled", &panic).ok();
 
     let app2 = app.clone();
@@ -744,8 +776,11 @@ pub(crate) fn resolve_provider(
             custom_base_url: get("llm_custom_url"),
         });
     }
-    // Local: the active downloaded model (default = registry default).
+    // Local: the active downloaded model (default = registry default). Ignore a
+    // stored id that is not in the registry (tampered DB) rather than join it
+    // into a path — models::model_path below would otherwise traverse on `..\`.
     let model_id = get("local_model")
+        .filter(|id| crate::mode2::models::find(id).is_some())
         .or_else(|| crate::mode2::models::REGISTRY.iter().find(|m| m.is_default).map(|m| m.id.to_string()))?;
     // Portable data folder — MUST match list/download/delete_model, else a
     // freshly-downloaded model isn't found here and Local mode silently fails.

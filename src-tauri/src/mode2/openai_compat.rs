@@ -103,7 +103,9 @@ impl OpenAiCompat {
                         "type": "object",
                         "properties": {
                             "title": { "type": "string" },
-                            "points": { "type": "array", "items": { "type": "string" }, "minItems": 1, "maxItems": 6 }
+                            // maxItems matches MAX_BULLETS so the API path is not
+                            // capped tighter than the local one (both keep ≤8).
+                            "points": { "type": "array", "items": { "type": "string" }, "minItems": 1, "maxItems": crate::mode2::MAX_BULLETS }
                         },
                         "required": ["title", "points"],
                         "additionalProperties": false
@@ -111,6 +113,24 @@ impl OpenAiCompat {
                 }
             }),
             SchemaMode::JsonObject => json!({ "type": "json_object" }),
+        }
+    }
+
+    /// The system prompt to actually send. Under a strict JSON schema the keys
+    /// are pinned by the schema, so the base prompt is enough. Under plain
+    /// `json_object` the model is only promised *valid JSON* — nothing names our
+    /// keys — so a custom endpoint would emit e.g. `{"bullets": [...]}` and the
+    /// parse into `Points` fails. Spell out the exact shape, as the local path does.
+    fn system_for(&self, prompt: &AssemblyPrompt) -> String {
+        match self.schema_mode {
+            SchemaMode::StrictJsonSchema => prompt.system().to_string(),
+            SchemaMode::JsonObject => format!(
+                "{}\nReturn ONLY a JSON object of exactly this shape: \
+                 {{\"title\": \"<the question, rephrased>\", \"points\": [\"<keyword bullet>\"]}}. \
+                 The key MUST be \"points\" (an array of short strings), 1 to {} items.",
+                prompt.system(),
+                crate::mode2::MAX_BULLETS
+            ),
         }
     }
 }
@@ -194,7 +214,7 @@ impl Provider for OpenAiCompat {
             "model": self.model,
             "temperature": 0,
             "messages": [
-                { "role": "system", "content": prompt.system() },
+                { "role": "system", "content": self.system_for(prompt) },
                 { "role": "user", "content": prompt.user() }
             ],
             "response_format": self.response_format(),

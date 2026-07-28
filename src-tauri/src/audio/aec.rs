@@ -58,19 +58,26 @@ impl TimeLine {
         if pos > self.end {
             let gap = pos - self.end;
             if gap > MAX_GAP {
+                // Long discontinuity (capture rebuild / long pause): drop history
+                // and re-anchor the timeline at the new QPC position.
                 self.data.clear();
                 self.start = pos;
                 self.end = pos;
             } else {
+                // Small forward gap: zero-fill so positions stay QPC-accurate.
                 self.data.resize(self.data.len() + gap as usize, 0);
                 self.end = pos;
             }
         }
-        // pos < end (out-of-order / overlap) just appends contiguously: we drop
-        // the backward timing rather than rewrite history — rare, speex tolerates
-        // a frame of jitter.
-        self.data.extend(samples.iter().copied());
-        self.end += samples.len() as i64;
+        // Now pos <= end. When pos < end the chunk overlaps samples we already
+        // hold — the device sample-clock ran slightly ahead of the QPC timeline.
+        // Appending it whole would push `end` permanently past true QPC time: a
+        // one-directional drift that, over a long call, slides the reference out
+        // of speex's 100 ms filter window and silently kills cancellation. Keep
+        // `end` locked to QPC — append only the part beyond `end`, drop the rest.
+        let skip = (self.end - pos).clamp(0, samples.len() as i64) as usize;
+        self.data.extend(samples[skip..].iter().copied());
+        self.end += (samples.len() - skip) as i64;
     }
 
     /// Fill `out` with FRAME samples starting at `pos`; positions outside the
@@ -153,8 +160,14 @@ impl EchoCanceller {
         let s: Vec<i16> = samples.iter().map(|&x| to_i16(x)).collect();
         self.mic.write(pos, &s);
         self.newest_mic = self.mic.end;
-        if self.next_pos.is_none() {
-            self.next_pos = Some(self.mic.start);
+        match self.next_pos {
+            None => self.next_pos = Some(self.mic.start),
+            // A mic-timeline reset (capture rebuild / long gap) jumps `start` far
+            // ahead. Without moving `next_pos` up, drain would grind out a burst
+            // of zero frames from the stale position to the new audio (a false
+            // silence stretch into the ASR). Skip straight to the new start.
+            Some(np) if np < self.mic.start => self.next_pos = Some(self.mic.start),
+            Some(_) => {}
         }
         self.drain()
     }
@@ -213,6 +226,25 @@ mod tests {
         assert!(f.iter().all(|&x| x == 0), "the silence gap reads as zeros");
         tl.read_frame(2 * FRAME as i64, &mut f);
         assert!(f.iter().all(|&x| x == 9), "post-gap frame aligns to its position");
+    }
+
+    #[test]
+    fn overlap_keeps_end_locked_to_qpc() {
+        // A fast device clock delivers a chunk whose QPC position (pos) lags the
+        // samples already written (pos < end). `end` must stay at the QPC-derived
+        // position and NOT accumulate the overlap, or the mic timeline drifts
+        // permanently ahead of the reference and defeats cancellation.
+        let mut tl = TimeLine::new();
+        tl.write(0, &[1i16; FRAME]); // end = 160
+        assert_eq!(tl.end, FRAME as i64);
+        // Claims pos 120 (overlaps the last 40 samples) but carries a full frame.
+        tl.write(120, &[2i16; FRAME]);
+        // Only the 120-onward tail is new: end = 120 + 160 = 280, not 160 + 160.
+        assert_eq!(tl.end, 120 + FRAME as i64);
+        // A wholly-covered chunk (skip >= len) adds nothing and never moves end.
+        let before = tl.end;
+        tl.write(0, &[3i16; FRAME]);
+        assert_eq!(tl.end, before);
     }
 
     #[test]

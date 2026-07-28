@@ -69,6 +69,11 @@ impl AsrEngine {
                 if let Some(d) = &multi {
                     return load_multi(d);
                 }
+                // Last resort: any installed model beats no audio at all. A user
+                // whose only model is the offline one should still get a session.
+                if let Some(d) = &offline {
+                    return load_offline(d);
+                }
             }
             EnginePref::Offline => {
                 if let Some(d) = &offline {
@@ -76,6 +81,11 @@ impl AsrEngine {
                 }
                 if let Some(d) = &multi {
                     return load_multi(d);
+                }
+                // Last resort: fall through to the English streaming model rather
+                // than fail when it is the only one on disk.
+                if let Some(d) = &english {
+                    return load_english(d);
                 }
             }
             EnginePref::Multilingual | EnginePref::Auto => {

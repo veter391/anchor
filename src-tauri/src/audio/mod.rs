@@ -343,14 +343,19 @@ fn health_loop(
     while !stop.load(Ordering::SeqCst) {
         std::thread::sleep(Duration::from_millis(1000));
         let now_ms = origin.elapsed().as_millis() as u64;
-        let silent = |seen: &AtomicU64| {
-            let s = seen.load(Ordering::SeqCst);
-            // Never-seen or quiet for longer than the threshold.
-            now_ms.saturating_sub(s) > DEAD_CHANNEL_SECS * 1000
+        // A channel is a wiring problem only if it has produced NO live audio at
+        // all since the check began (past a short grace), NOT if it fell silent
+        // for a moment. Loopback ("them") emits nothing for whole far-end turns
+        // by design, and the mic ("me") is quiet while the user listens — rolling
+        // silence is normal on a real, turn-taking call, so treating it as death
+        // fired a false "dead output" alarm on essentially every turn. `seen` is
+        // 0 until the first live sample (stored as now_ms.max(1)), so 0 == never.
+        let dead = |seen: &AtomicU64| {
+            seen.load(Ordering::SeqCst) == 0 && now_ms > DEAD_CHANNEL_SECS * 1000
         };
         let health = ChannelHealth {
-            them_silent: silent(&them_seen),
-            me_silent: silent(&me_seen),
+            them_silent: dead(&them_seen),
+            me_silent: dead(&me_seen),
         };
         if last.as_ref().map(|l| (l.them_silent, l.me_silent))
             != Some((health.them_silent, health.me_silent))

@@ -722,9 +722,14 @@ pub fn delete_card(conn: &Connection, card_id: &str) -> Result<(), String> {
 }
 
 pub fn wipe_corpus(conn: &Connection) -> Result<(), String> {
+    // card_events.card_id has no FK to cards (it is a retrieval log, kept even
+    // if a card is later edited), so deleting cards does NOT cascade to it —
+    // wipe it explicitly or a full corpus wipe leaves dangling match-log rows.
+    // coverage and card_vec DO cascade from cards (ON DELETE CASCADE), so the
+    // cards delete already clears those.
     conn.execute_batch(
         "DELETE FROM bullet_vec; DELETE FROM card_vec; DELETE FROM card_fts;
-         DELETE FROM bullets; DELETE FROM cards;",
+         DELETE FROM card_events; DELETE FROM bullets; DELETE FROM cards;",
     )
     .map_err(|e| e.to_string())
 }

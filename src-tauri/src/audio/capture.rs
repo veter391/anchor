@@ -159,8 +159,10 @@ fn run_stream_once(
     let mut queue: VecDeque<u8> = VecDeque::new();
     client.start_stream().map_err(|e| e.to_string())?;
 
-    // Poll the default endpoint every ~1 s (5 × the 200 ms event timeout).
-    let mut ticks: u32 = 0;
+    // Poll the default endpoint at most once per second. The event fires per
+    // audio buffer (~10-30 ms) while audio flows, not per 200 ms timeout, so a
+    // fixed tick count would enumerate COM devices 10-20×/s; gate on wall time.
+    let mut last_poll = std::time::Instant::now();
     // Timeline cursor (µs of the next expected sample) — continues the QPC clock
     // seamlessly across a rare invalid stamp so the timeline never jumps.
     let mut last_end_us: u64 = 0;
@@ -202,9 +204,8 @@ fn run_stream_once(
                 break StreamExit::Stopped; // worker gone — nothing to recover
             }
         }
-        ticks += 1;
-        if ticks >= 5 {
-            ticks = 0;
+        if last_poll.elapsed() >= std::time::Duration::from_secs(1) {
+            last_poll = std::time::Instant::now();
             if default_device_changed(&enumerator, direction, &opened_id) {
                 break StreamExit::DeviceChanged;
             }

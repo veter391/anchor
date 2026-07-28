@@ -384,6 +384,12 @@ fn set_llm_config(
         setting_set(&conn, "llm_mode", &m)?;
     }
     if let Some(m) = local_model {
+        // Only known registry ids: `local_model` is later joined into a file
+        // path (models/<id>.gguf), so an unchecked value like `..\..\x` would
+        // traverse out of the models dir. Reject anything not in the registry.
+        if crate::mode2::models::find(&m).is_none() {
+            return Err(format!("unknown model id: {m}"));
+        }
         setting_set(&conn, "local_model", &m)?;
     }
     if let Some(p) = api_provider {
