@@ -97,8 +97,12 @@ $count = (Get-ChildItem $LibsDir -File).Count
 Write-Host "      staged $count DLLs" -ForegroundColor Green
 
 # --- 3. Bundle the NSIS installer --------------------------------------------
+# The installer-libs resource lives ONLY in tauri.installer.conf.json (merged in
+# here), never in the base config — otherwise every plain `cargo build`/clippy/CI
+# would fail its build.rs resource-glob check on a checkout without the staged,
+# build-generated DLLs.
 Write-Host "[3/3] Bundling the NSIS installer ..." -ForegroundColor Cyan
-& cmd /c "`"$buildEnv`" pnpm tauri build"
+& cmd /c "`"$buildEnv`" pnpm tauri build --config src-tauri/tauri.installer.conf.json"
 if ($LASTEXITCODE -ne 0) { Fail "Tauri bundle failed (exit $LASTEXITCODE)." }
 
 $nsis = Join-Path $ReleaseDir "bundle/nsis"
