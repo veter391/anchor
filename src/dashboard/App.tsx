@@ -37,7 +37,10 @@ export function App() {
     invoke<string>("app_version").then(setVersion).catch(() => {});
     invoke<boolean>("get_consent")
       .then(setConsent)
-      .catch(() => setConsent(true)); // fail-open: never lock the user out
+      // Fail CLOSED: if we can't confirm consent, show the (legally load-bearing)
+      // recording-consent screen rather than skipping it. Accepting proceeds, so
+      // this is not a lock-out.
+      .catch(() => setConsent(false));
     invoke<{ installed: boolean }[]>("list_asr_models")
       .then((rows) => setNeedsSetup(rows.length > 0 && rows.every((r) => !r.installed)))
       .catch(() => {});

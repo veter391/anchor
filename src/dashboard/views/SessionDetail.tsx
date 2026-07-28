@@ -170,8 +170,13 @@ export function SessionDetail({ session, onBack }: { session: SessionRow; onBack
   };
   const toggleShare = async () => {
     const next = !shareHidden;
-    setShareHidden(next);
-    await invoke("set_capture_excluded", { on: next }).catch((e) => setErr(String(e)));
+    setErr(null);
+    try {
+      await invoke("set_capture_excluded", { on: next });
+      setShareHidden(next); // flip the label ONLY after protection actually changed
+    } catch (e) {
+      setErr(`Could not change screen-share protection: ${String(e)}`);
+    }
   };
 
   const addMaterial = async () => {

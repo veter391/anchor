@@ -33,6 +33,7 @@ export function Settings() {
   const [boot, setBoot] = useState<BootInfo | null>(null);
   const [look, setLook] = useState<Appearance>({ accent: "teal", theme: "dark", overlay_opacity: 90 });
   const [captureExcluded, setCaptureExcluded] = useState(false);
+  const [capErr, setCapErr] = useState<string | null>(null);
   const [asrEngine, setAsrEngine] = useState("auto");
 
   useEffect(() => {
@@ -47,9 +48,17 @@ export function Settings() {
     invoke("set_asr_engine", { engine }).catch(() => {});
   };
 
-  const toggleCapture = (on: boolean) => {
+  const toggleCapture = async (on: boolean) => {
     setCaptureExcluded(on);
-    invoke("set_capture_excluded", { on }).catch(() => {});
+    setCapErr(null);
+    try {
+      await invoke("set_capture_excluded", { on });
+    } catch (e) {
+      // Protection did NOT change — never leave the box implying it did, or the
+      // user shares their screen believing notes are hidden when they are not.
+      setCaptureExcluded(!on);
+      setCapErr(`Could not change screen-share protection: ${String(e)}`);
+    }
   };
 
   const save = (patch: Partial<Appearance>) => {
@@ -200,6 +209,9 @@ export function Settings() {
             </span>
           </span>
         </label>
+        {capErr && (
+          <div style={{ marginTop: 10, fontSize: 12.5, color: "var(--red)" }}>{capErr}</div>
+        )}
       </section>
 
       {/* Speech recognition model */}

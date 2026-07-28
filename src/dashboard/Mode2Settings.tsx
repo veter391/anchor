@@ -203,7 +203,11 @@ export function Mode2Settings() {
             Provider
             <select
               value={cfg.api_provider}
-              onChange={(e) => invoke("set_llm_config", { apiProvider: e.target.value }).then(refresh)}
+              onChange={(e) =>
+                invoke("set_llm_config", { apiProvider: e.target.value })
+                  .then(refresh)
+                  .catch(() => refresh()) // on failure, re-sync the select to the saved value
+              }
               style={{
                 marginLeft: 8,
                 background: "var(--bg-elevated)",

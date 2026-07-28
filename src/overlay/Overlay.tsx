@@ -86,7 +86,10 @@ function useInteractiveZone(
       }).catch(() => {
         /* dev-server reload race; next report wins */
       });
-      invoke("fit_overlay_height", { height: r.bottom + 8 }).catch(() => {});
+      // Window sizing is owned by the single grow-to-fit effect below (which
+      // enforces the 120-520 px bounds); this hook only reports click-through
+      // zones, so it does not also resize (that fired a redundant second IPC and
+      // let its no-floor path override the min height).
     };
     report();
     const ro = new ResizeObserver(report);
@@ -171,7 +174,9 @@ export function Overlay() {
     const win = getCurrentWindow();
     const fit = () => {
       // +12 = the wrapper's 6 px top/bottom padding; width stays the card width.
-      const h = Math.min(520, Math.ceil(el.getBoundingClientRect().height) + 12);
+      // Clamp 120-520: a 1-2 bullet card must not shrink below a glanceable
+      // minimum, and a broad 8-anchor card caps at 520 with no scrollbar.
+      const h = Math.max(120, Math.min(520, Math.ceil(el.getBoundingClientRect().height) + 12));
       void win.setSize(new LogicalSize(440, h)).catch(() => {});
     };
     fit();

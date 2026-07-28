@@ -76,7 +76,7 @@
 
   --text: #1a1b1e;
   --text-soft: #3f434a;
-  --text-dim: #8b8f97;
+  --text-dim: #7e828b; /* >=3:1 on --bg-soft for the delete/archive glyphs (a11y) */
   --text-muted: #5c616b;
 
   --shadow-soft: 0 1px 0 rgba(0, 0, 0, 0.02), 0 8px 26px rgba(30, 20, 16, 0.08);
