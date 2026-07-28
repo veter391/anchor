@@ -4,6 +4,7 @@
 
 pub mod aec;
 pub mod asr;
+pub mod asr_models;
 pub mod asr_offline;
 pub mod capture;
 pub mod engine;

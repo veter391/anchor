@@ -100,7 +100,7 @@ impl AsrEngine {
                 }
             }
         }
-        Err("no ASR model found — set ANCHOR_ASR_MODEL_DIR / ANCHOR_ASR_FALLBACK_DIR or install a model".into())
+        Err("No speech model installed. Open Settings → Speech model and download one, then start the call.".into())
     }
 
     pub fn label(&self) -> &'static str {

@@ -300,6 +300,70 @@ fn delete_model(app: tauri::AppHandle, id: String) -> Result<(), String> {
     mode2::models::delete(&app_data, info.id)
 }
 
+// ── ASR speech models (first-run downloader) ────────────────────────
+
+#[derive(serde::Serialize)]
+struct AsrModelRow {
+    id: String,
+    name: String,
+    tagline: String,
+    languages: String,
+    licence: String,
+    size_bytes: u64,
+    installed: bool,
+}
+
+#[tauri::command]
+fn list_asr_models() -> Result<Vec<AsrModelRow>, String> {
+    let app_data = paths::data_dir();
+    Ok(audio::asr_models::REGISTRY
+        .iter()
+        .map(|m| AsrModelRow {
+            id: m.id.into(),
+            name: m.name.into(),
+            tagline: m.tagline.into(),
+            languages: m.languages.into(),
+            licence: m.licence.into(),
+            size_bytes: m.total_bytes(),
+            installed: audio::asr_models::is_installed(&app_data, m),
+        })
+        .collect())
+}
+
+#[tauri::command]
+async fn download_asr_model(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    let info = audio::asr_models::find(&id).ok_or("unknown ASR model id")?;
+    let app_data = paths::data_dir();
+    let app2 = app.clone();
+    let id2 = id.clone();
+    audio::asr_models::download(&app_data, info, move |downloaded, total| {
+        app2.emit_to(
+            "dashboard",
+            "asr_model:progress",
+            DownloadProgress {
+                id: id2.clone(),
+                downloaded,
+                total,
+            },
+        )
+        .ok();
+    })
+    .await?;
+    app.emit_to("dashboard", "asr_model:done", &id).ok();
+    Ok(())
+}
+
+#[tauri::command]
+fn delete_asr_model(id: String) -> Result<(), String> {
+    // Registry-validate before any path use (no "../x" traversal). No resident
+    // engine to unload: the ASR model is loaded inside the audio worker for a
+    // call, and a live recognizer keeps its own in-memory copy — removing the
+    // files only affects the NEXT session's load, which falls back cleanly.
+    let info = audio::asr_models::find(&id).ok_or("unknown ASR model id")?;
+    let app_data = paths::data_dir();
+    audio::asr_models::delete(&app_data, info)
+}
+
 #[derive(serde::Serialize)]
 struct LlmConfig {
     mode: String,
@@ -862,6 +926,9 @@ pub fn run() {
             list_models,
             download_model,
             delete_model,
+            list_asr_models,
+            download_asr_model,
+            delete_asr_model,
             get_llm_config,
             set_llm_config,
             get_asr_engine,

@@ -7,6 +7,7 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { LivePanel } from "../LivePanel";
 import { Mode2Settings } from "../Mode2Settings";
+import { AsrModels } from "../AsrModels";
 import { panel, SectionTitle, applyAppearance } from "../ui";
 
 interface BootInfo {
@@ -228,6 +229,7 @@ export function Settings() {
             Takes effect on your next call.
           </span>
         </div>
+        <AsrModels />
       </section>
 
       {/* Developer */}
