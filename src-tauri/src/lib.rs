@@ -890,6 +890,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .on_window_event(|window, event| {
             // Closing the main dashboard window quits the whole app. Otherwise the
             // frameless, always-on-top overlay lives in its own window, so closing
@@ -1014,6 +1015,29 @@ pub fn run() {
                 let _ = overlay.set_content_protected(true);
             }
             overlay_input::spawn_poll_loop(overlay);
+
+            // Global "unexpected question" hotkey (00_PRODUCT §Panic): summon the
+            // three universal anchors from anywhere — the overlay never takes
+            // focus, so an in-app key would never reach it. Ctrl+Shift+Space by
+            // default; if another app already owns that combo, registration fails
+            // and we log rather than crash (a rebinding UI is a later step).
+            {
+                use tauri_plugin_global_shortcut::{
+                    Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState,
+                };
+                let panic_sc =
+                    Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::Space);
+                let handle = app.handle().clone();
+                if let Err(e) =
+                    app.global_shortcut().on_shortcut(panic_sc, move |_app, _sc, event| {
+                        if event.state == ShortcutState::Pressed {
+                            live::show_panic_card(&handle);
+                        }
+                    })
+                {
+                    tracing::warn!(error = %e, "could not register the panic hotkey (Ctrl+Shift+Space)");
+                }
+            }
             Ok(())
         })
         .run(tauri::generate_context!())

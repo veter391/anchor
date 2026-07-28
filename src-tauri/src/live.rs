@@ -366,9 +366,9 @@ pub fn get_thresholds(live: tauri::State<'_, LiveState>) -> Thresholds {
     lock_or_recover(&live.engine).thresholds
 }
 
-/// Panic hotkey / button: show the three universal anchors instantly.
-#[tauri::command]
-pub fn panic_now(app: tauri::AppHandle) {
+/// Show the three universal panic anchors on the overlay instantly. Shared by
+/// the `panic_now` command (dev button) and the global hotkey.
+pub fn show_panic_card(app: &tauri::AppHandle) {
     let card = crate::mode2::panic_card();
     // Mark the overlay as OFF the matched card (like the auto-assemble path), so
     // a later Decision::Stay re-shows the real card — otherwise the panic card
@@ -377,6 +377,12 @@ pub fn panic_now(app: tauri::AppHandle) {
         .overlay_off_card
         .store(true, Ordering::SeqCst);
     app.emit_to("overlay", "card:assembled", &card).ok();
+}
+
+/// Panic hotkey / button: show the three universal anchors instantly.
+#[tauri::command]
+pub fn panic_now(app: tauri::AppHandle) {
+    show_panic_card(&app);
 }
 
 // ── Events ──────────────────────────────────────────────────────────
