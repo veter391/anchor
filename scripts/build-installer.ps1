@@ -61,40 +61,10 @@ $exe = Join-Path $ReleaseDir "anchor.exe"
 if (-not (Test-Path $exe)) { Fail "No release build at '$exe'. Remove -SkipBuild to build it." }
 
 # --- 2. Stage the self-contained DLL set into installer-libs/ ----------------
+# Delegated to the single-source stager (shared with the CI release workflow).
 Write-Host "[2/3] Staging runtime DLLs into $LibsDir ..." -ForegroundColor Cyan
-if (Test-Path $LibsDir) { Remove-Item $LibsDir -Recurse -Force }
-New-Item -ItemType Directory -Path $LibsDir -Force | Out-Null
-
-# 2a. Speech runtime, emitted beside the exe by the sherpa-onnx 'shared' build.
-$runtimeDlls = @(
-  "onnxruntime.dll",
-  "onnxruntime_providers_shared.dll",
-  "sherpa-onnx-c-api.dll",
-  "sherpa-onnx-cxx-api.dll"
-)
-foreach ($d in $runtimeDlls) {
-  $src = Join-Path $ReleaseDir $d
-  if (-not (Test-Path $src)) { Fail "Missing runtime DLL: $src (was the release built with the sherpa 'shared' feature?)" }
-  Copy-Item $src $LibsDir
-}
-
-# 2b. VC++ redistributable (CRT + OpenMP), located via vswhere.
-$vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio/Installer/vswhere.exe"
-if (-not (Test-Path $vswhere)) { Fail "vswhere.exe not found -- install Visual Studio 2022 Build Tools." }
-$vsRoot = & $vswhere -latest -products '*' -property installationPath
-if (-not $vsRoot) { Fail "No Visual Studio installation found by vswhere." }
-$redistRoot = Join-Path $vsRoot "VC/Redist/MSVC"
-$crtDir = Get-ChildItem $redistRoot -Directory -ErrorAction SilentlyContinue |
-  Sort-Object Name -Descending |
-  ForEach-Object { Join-Path $_.FullName "x64/Microsoft.VC143.CRT" } |
-  Where-Object { Test-Path $_ } | Select-Object -First 1
-if (-not $crtDir) { Fail "VC143 x64 CRT redist not found under $redistRoot." }
-$ompDir = Join-Path (Split-Path $crtDir) "Microsoft.VC143.OpenMP"
-Copy-Item (Join-Path $crtDir "*.dll") $LibsDir           # msvcp140*, vcruntime140*, concrt140, vccorlib140
-Copy-Item (Join-Path $ompDir "vcomp140.dll") $LibsDir    # OpenMP runtime (used by the static ONNX Runtime)
-
-$count = (Get-ChildItem $LibsDir -File).Count
-Write-Host "      staged $count DLLs" -ForegroundColor Green
+& (Join-Path $PSScriptRoot "stage-installer-libs.ps1") -ReleaseDir $ReleaseDir -OutDir $LibsDir
+if ($LASTEXITCODE -ne 0) { Fail "Staging the runtime DLLs failed (exit $LASTEXITCODE)." }
 
 # --- 3. Bundle the NSIS installer --------------------------------------------
 # The installer-libs resource lives ONLY in tauri.installer.conf.json (merged in

@@ -1,0 +1,103 @@
+name: Release
+
+# Build the Windows installer on CI. Two entry points:
+#   - workflow_dispatch: build + upload the setup.exe as a run artifact (no
+#     release is published) — used to verify the pipeline without shipping.
+#   - a pushed tag `v*`: build, sign (if signing secrets are configured), and
+#     publish a DRAFT pre-release with the setup.exe attached. Draft, so a human
+#     reviews and clicks publish — nothing goes public automatically.
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write # required to create the release
+
+jobs:
+  installer:
+    name: Windows installer
+    runs-on: windows-latest
+    env:
+      # Signing is OPTIONAL and OFF until these repo secrets are set (see
+      # docs/signing.md). When AZURE_TENANT_ID is empty the sign step is skipped
+      # and the installer is produced unsigned (SmartScreen path documented).
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      # Native build environment (mirrors the green CI job).
+      LIBCLANG_PATH: C:\Program Files\LLVM\bin
+      CMAKE_GENERATOR: Ninja
+      CMAKE_ARGS: -DGGML_OPENMP=OFF
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install native build tools
+        run: choco install ninja llvm -y
+      - name: Set up MSVC developer environment
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - run: pnpm install --frozen-lockfile
+
+      # 1. Release build WITHOUT bundling: produces anchor.exe and the sherpa /
+      #    ONNX Runtime DLLs next to it, which the stager needs.
+      - name: Release build (no bundle)
+        run: pnpm tauri build --no-bundle
+
+      # 2. Stage the self-contained DLL set (single source of truth, shared with
+      #    scripts/build-installer.ps1) into src-tauri/installer-libs.
+      - name: Stage runtime DLLs
+        shell: pwsh
+        run: scripts/stage-installer-libs.ps1 -ReleaseDir src-tauri/target/release -OutDir src-tauri/installer-libs
+
+      # 3. Bundle the NSIS installer. The installer-libs resource is merged in
+      #    ONLY here (tauri.installer.conf.json), never in the base config.
+      - name: Bundle installer
+        run: pnpm tauri build --config src-tauri/tauri.installer.conf.json
+
+      # 4. Sign the setup.exe — skipped automatically unless signing secrets are
+      #    configured (docs/signing.md).
+      - name: Sign installer (Azure Trusted Signing)
+        if: env.AZURE_TENANT_ID != ''
+        uses: azure/trusted-signing-action@v0.5.1
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+          trusted-signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ secrets.AZURE_SIGNING_PROFILE }}
+          files-folder: src-tauri/target/release/bundle/nsis
+          files-folder-filter: exe
+          file-digest: SHA256
+
+      # 5a. workflow_dispatch → artifact only (verify the pipeline, ship nothing).
+      - name: Upload installer artifact
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: anchor-installer
+          path: src-tauri/target/release/bundle/nsis/*-setup.exe
+          if-no-files-found: error
+
+      # 5b. tag push → DRAFT pre-release with the installer attached.
+      - name: Publish draft release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          prerelease: true
+          files: src-tauri/target/release/bundle/nsis/*-setup.exe
+          body: |
+            Pre-alpha build of Anchor.
+
+            **Windows installer** — download the `.exe`, run it, and Anchor
+            installs per-user (no admin). On first run it downloads its default
+            speech + embedding models (~1 GB) and is otherwise fully local.
+
+            This build is **not code-signed yet**, so Windows SmartScreen may say
+            "Windows protected your PC" the first time — click **More info** then
+            **Run anyway**. See docs/distribution.md.
