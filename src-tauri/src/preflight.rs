@@ -112,6 +112,21 @@ impl reqwest::dns::Resolve for VettingResolver {
     }
 }
 
+/// Per-hop redirect decision, factored out of the client's redirect policy so
+/// it is unit-testable without reqwest's `Attempt` internals. A hop is allowed
+/// only to an http/https URL whose literal host is not blocked.
+///
+/// This closes the gap `VettingResolver` structurally cannot see: reqwest's
+/// connector (hyper-util) only calls a custom DNS resolver for host *names* —
+/// a URL whose host is already a literal IP skips resolution and connects
+/// straight away. So a `302 Location: http://127.0.0.1/` (or `169.254.169.254`,
+/// `192.168.1.1`, `[::1]`) would bypass the resolver entirely. `is_blocked_host`
+/// catches literal IPs + `localhost` here, per hop; name hosts return `false`
+/// and are vetted by `VettingResolver` at connect time.
+fn redirect_hop_allowed(scheme: &str, host: Option<&str>) -> bool {
+    matches!(scheme, "http" | "https") && host.map(|h| !is_blocked_host(h)).unwrap_or(false)
+}
+
 #[derive(Deserialize)]
 struct ContextSummary {
     title: String,
@@ -273,10 +288,24 @@ pub async fn preflight_research(
     let client = reqwest::Client::builder()
         .user_agent("Anchor/0.6 (pre-flight research)")
         .timeout(std::time::Duration::from_secs(20))
-        // Every connection (entry + each redirect hop) resolves through the
-        // vetting resolver, so no hop can be rebound to an internal address.
+        // Two layers on redirects: VettingResolver drops any NAME hop that
+        // resolves to an internal IP (closes DNS-rebinding); the custom policy
+        // below vets each hop's LITERAL host, which the resolver never sees
+        // (hyper-util skips DNS for literal IPs) — so a 302 straight to
+        // 127.0.0.1 / 169.254.169.254 is refused, not followed.
+        .https_only(false) // entry may be http:// (user paste); hops still vetted
         .dns_resolver(std::sync::Arc::new(VettingResolver))
-        .redirect(reqwest::redirect::Policy::limited(4))
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            if attempt.previous().len() >= 4 {
+                return attempt.error("too many redirects");
+            }
+            let url = attempt.url();
+            if redirect_hop_allowed(url.scheme(), url.host_str()) {
+                attempt.follow()
+            } else {
+                attempt.error("redirect to a disallowed host or scheme")
+            }
+        }))
         .build()
         .map_err(|e| e.to_string())?;
     let resp = client
@@ -386,6 +415,21 @@ mod tests {
         for h in ["example.com", "en.wikipedia.org", "8.8.8.8"] {
             assert!(!is_blocked_host(h), "{h} should be allowed");
         }
+    }
+
+    #[test]
+    fn redirect_hop_blocks_literal_internal_targets() {
+        // The gap VettingResolver structurally cannot see: a redirect straight
+        // to a literal IP skips DNS, so it MUST be caught by the per-hop policy.
+        for h in ["127.0.0.1", "169.254.169.254", "192.168.1.1", "10.0.0.5", "[::1]", "0.0.0.0"] {
+            assert!(!redirect_hop_allowed("http", Some(h)), "{h} redirect must be refused");
+            assert!(!redirect_hop_allowed("https", Some(h)), "{h} redirect must be refused");
+        }
+        assert!(!redirect_hop_allowed("file", Some("etc/passwd")), "non-http scheme refused");
+        assert!(!redirect_hop_allowed("http", None), "hostless URL refused");
+        // Public names/IPs are allowed here; VettingResolver vets names at connect.
+        assert!(redirect_hop_allowed("https", Some("example.com")));
+        assert!(redirect_hop_allowed("http", Some("8.8.8.8")));
     }
 
     #[test]
