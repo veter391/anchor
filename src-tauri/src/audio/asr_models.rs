@@ -232,6 +232,10 @@ async fn download_inner(
 
     let client = reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(30))
+        // Model URLs are hardcoded https://huggingface.co/... — refuse any
+        // downgrade to http:// (e.g. via a redirect) so bytes only ever arrive
+        // over TLS before the sha256 gate.
+        .https_only(true)
         .build()
         .map_err(|e| e.to_string())?;
 
@@ -265,57 +269,103 @@ async fn download_file(
     if file.url.is_empty() {
         return Err(format!("no download URL configured for {}", file.name));
     }
+    use std::io::Read;
     let tmp_path = dir.join(format!("{}.part", file.name));
-    // A half-written .part must never survive an error (a stale one would fool
-    // nothing — size is re-checked — but leaves junk on disk).
-    let fail = |msg: String| -> String {
+    // Corruption (oversize / hash mismatch) deletes the .part so the next try is
+    // clean; a NETWORK failure keeps it so the next try resumes (see below).
+    let drop_part = || {
         let _ = std::fs::remove_file(&tmp_path);
-        msg
     };
 
-    let resp = client
-        .get(file.url)
+    // Resume an interrupted download: if a .part from a killed run is present and
+    // shorter than the target, ask for the rest with a Range request.
+    let have = std::fs::metadata(&tmp_path).map(|m| m.len()).unwrap_or(0);
+    let want_resume = have > 0 && have < file.size_bytes;
+    let mut req = client.get(file.url);
+    if want_resume {
+        req = req.header(reqwest::header::RANGE, format!("bytes={have}-"));
+    }
+    let resp = req
         .send()
         .await
         .map_err(|e| format!("download request failed for {}: {e}", file.name))?;
-    if !resp.status().is_success() {
-        return Err(format!("download HTTP {} for {}", resp.status(), file.name));
+    let status = resp.status();
+    if !status.is_success() {
+        return Err(format!("download HTTP {status} for {}", file.name));
     }
+    // 206 = the server honoured the range → append; anything else (200) is a
+    // full body → start the file over.
+    let resuming = want_resume && status == reqwest::StatusCode::PARTIAL_CONTENT;
 
-    let mut out = std::fs::File::create(&tmp_path).map_err(|e| e.to_string())?;
     let mut hasher = Sha256::new();
-    let mut cur: u64 = 0;
+    let mut cur: u64;
+    let mut out = if resuming {
+        // Seed the hash with the bytes already on disk, then append to them.
+        let mut existing = std::fs::File::open(&tmp_path).map_err(|e| e.to_string())?;
+        let mut buf = [0u8; 64 * 1024];
+        loop {
+            let n = existing.read(&mut buf).map_err(|e| e.to_string())?;
+            if n == 0 {
+                break;
+            }
+            hasher.update(&buf[..n]);
+        }
+        cur = have;
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&tmp_path)
+            .map_err(|e| e.to_string())?
+    } else {
+        cur = 0;
+        std::fs::File::create(&tmp_path).map_err(|e| e.to_string())?
+    };
+    on_progress(base + cur, total);
+
     let mut stream = resp.bytes_stream();
     loop {
         let next = tokio::time::timeout(std::time::Duration::from_secs(60), stream.next()).await;
         let Ok(item) = next else {
-            return Err(fail(format!("download stalled for {} (no data for 60 s)", file.name)));
+            // Network stall — keep the .part so the next attempt resumes.
+            return Err(format!("download stalled for {} (no data for 60 s)", file.name));
         };
         let Some(chunk) = item else { break };
         let chunk = match chunk {
             Ok(c) => c,
-            Err(e) => return Err(fail(format!("download stream error for {}: {e}", file.name))),
+            Err(e) => return Err(format!("download stream error for {}: {e}", file.name)),
         };
+        cur += chunk.len() as u64;
+        // Never write past the file's known size. The sha256 below is the real
+        // integrity gate, but a compromised/MITM'd transport could stream
+        // unbounded data straight to disk before that check runs — cap it at the
+        // ground-truth size (a genuine file matches exactly, so this never trips
+        // on a good download).
+        if cur > file.size_bytes {
+            drop_part();
+            return Err(format!(
+                "download for {} exceeded its known size ({} B) — rejected",
+                file.name, file.size_bytes
+            ));
+        }
         hasher.update(&chunk);
         if let Err(e) = out.write_all(&chunk) {
-            return Err(fail(e.to_string()));
+            return Err(e.to_string());
         }
-        cur += chunk.len() as u64;
         on_progress(base + cur, total);
     }
     if let Err(e) = out.flush() {
-        return Err(fail(e.to_string()));
+        return Err(e.to_string());
     }
     drop(out);
 
     let digest = format!("{:x}", hasher.finalize());
     if digest != file.sha256 {
-        return Err(fail(format!(
+        drop_part(); // corrupt → force a clean re-download next time
+        return Err(format!(
             "sha256 mismatch for {} (got {}…, expected {}…) — download rejected",
             file.name,
             &digest[..12],
             &file.sha256[..12]
-        )));
+        ));
     }
     std::fs::rename(&tmp_path, dir.join(file.name)).map_err(|e| e.to_string())?;
     Ok(())

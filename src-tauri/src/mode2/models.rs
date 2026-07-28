@@ -125,6 +125,8 @@ async fn download_inner(
 
     let client = reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(30))
+        // GGUF URLs are hardcoded https — refuse any downgrade to http://.
+        .https_only(true)
         .build()
         .map_err(|e| e.to_string())?;
     let resp = client
@@ -152,11 +154,19 @@ async fn download_inner(
             Ok(c) => c,
             Err(e) => return Err(fail(&tmp_path, format!("download stream error: {e}"))),
         };
+        downloaded += chunk.len() as u64;
+        // Cap disk writes at the ground-truth size; the sha256 below is the real
+        // gate but must not let a hostile transport fill the disk first.
+        if downloaded > info.size_bytes {
+            return Err(fail(
+                &tmp_path,
+                format!("download exceeded its known size ({} B) — rejected", info.size_bytes),
+            ));
+        }
         hasher.update(&chunk);
         if let Err(e) = file.write_all(&chunk) {
             return Err(fail(&tmp_path, e.to_string()));
         }
-        downloaded += chunk.len() as u64;
         on_progress(downloaded, total);
     }
     if let Err(e) = file.flush() {
