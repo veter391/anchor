@@ -12,6 +12,7 @@ import { Cards } from "./views/Cards";
 import { Settings } from "./views/Settings";
 import { About } from "./views/About";
 import { ConsentModal } from "./ConsentModal";
+import { Setup } from "./Setup";
 
 const NAV: { key: NavKey; label: string }[] = [
   { key: "general", label: "General" },
@@ -26,6 +27,8 @@ export function App() {
   const [version, setVersion] = useState("");
   // null = still loading; false = show the first-run consent screen.
   const [consent, setConsent] = useState<boolean | null>(null);
+  // true = no speech model yet → download the default automatically after consent.
+  const [needsSetup, setNeedsSetup] = useState(false);
 
   useEffect(() => {
     invoke<{ accent: string; theme: string }>("get_appearance")
@@ -35,6 +38,9 @@ export function App() {
     invoke<boolean>("get_consent")
       .then(setConsent)
       .catch(() => setConsent(true)); // fail-open: never lock the user out
+    invoke<{ installed: boolean }[]>("list_asr_models")
+      .then((rows) => setNeedsSetup(rows.length > 0 && rows.every((r) => !r.installed)))
+      .catch(() => {});
   }, []);
 
   return (
@@ -46,6 +52,9 @@ export function App() {
             setConsent(true);
           }}
         />
+      )}
+      {consent === true && needsSetup && (
+        <Setup onReady={() => setNeedsSetup(false)} onSkip={() => setNeedsSetup(false)} />
       )}
       {/* Left icon rail */}
       <nav
