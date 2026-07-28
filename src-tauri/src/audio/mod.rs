@@ -253,6 +253,64 @@ pub fn stop_audio(app: tauri::AppHandle, audio: tauri::State<'_, AudioState>) ->
 }
 
 /// Drains audio chunks, runs ASR per channel, and forwards results:
+/// One-shot audio diagnostic for the live call test: do the two capture channels
+/// share a timeline? If the loopback device reports bad QPC timestamps, "them"
+/// anchors far from "me" and the signal-level AEC silently cancels nothing (H1).
+/// Records the first samples' timestamps per channel and writes a summary to
+/// `data_dir/audio-diag.txt` for the owner to send back. Cheap: first 30 chunks
+/// each, then a single file write.
+#[derive(Default)]
+struct AudioDiag {
+    them_first: Option<u64>,
+    them_last: u64,
+    them_n: u32,
+    me_first: Option<u64>,
+    me_last: u64,
+    me_n: u32,
+    written: bool,
+}
+
+impl AudioDiag {
+    fn record(&mut self, ch: Channel, ts_us: u64) {
+        let (first, last, n) = match ch {
+            Channel::Them => (&mut self.them_first, &mut self.them_last, &mut self.them_n),
+            Channel::Me => (&mut self.me_first, &mut self.me_last, &mut self.me_n),
+        };
+        if first.is_none() {
+            *first = Some(ts_us);
+        }
+        *last = ts_us;
+        *n += 1;
+    }
+
+    fn maybe_write(&mut self) {
+        if self.written || self.them_n < 30 || self.me_n < 30 {
+            return;
+        }
+        self.written = true;
+        let them0 = self.them_first.unwrap_or(0);
+        let me0 = self.me_first.unwrap_or(0);
+        let gap_ms = (them0 as i64 - me0 as i64).abs() / 1000;
+        let aligned = gap_ms < 3000;
+        let body = format!(
+            "Anchor audio diagnostic\n\
+             them (system audio): {} chunks, first ts_us={them0}, last ts_us={}\n\
+             me   (microphone):   {} chunks, first ts_us={me0}, last ts_us={}\n\
+             timeline gap |them_first - me_first| = {gap_ms} ms\n\
+             AEC timeline alignment: {}\n\
+             (MISALIGNED => the loopback device gives bad timestamps; signal-level\n\
+              echo cancellation is not working on this hardware — finding H1.)\n",
+            self.them_n,
+            self.them_last,
+            self.me_n,
+            self.me_last,
+            if aligned { "ALIGNED (ok)" } else { "MISALIGNED (H1 suspected)" },
+        );
+        let path = crate::paths::data_dir().join("audio-diag.txt");
+        let _ = std::fs::write(path, body);
+    }
+}
+
 /// finals go into the rolling windows (match engine); partials go to the UI.
 #[allow(clippy::too_many_arguments)] // cohesive thread-entry args (asr + 3 liveness atomics)
 fn worker_loop(
@@ -276,6 +334,7 @@ fn worker_loop(
     // before ASR so the far side's voice (heard from open speakers) is not
     // transcribed on the mic. Harmless with headphones (no echo to cancel).
     let mut echo_canceller = aec::EchoCanceller::new();
+    let mut diag = AudioDiag::default();
 
     while !stop.load(std::sync::atomic::Ordering::SeqCst) {
         let chunk = match rx.recv_timeout(std::time::Duration::from_millis(250)) {
@@ -289,6 +348,9 @@ fn worker_loop(
         if matches!(chunk.channel, Channel::Me) {
             me_delivered.store(now_ms.max(1), Ordering::SeqCst);
         }
+        // One-shot channel-timeline diagnostic for the live test (H1).
+        diag.record(chunk.channel, chunk.ts_us);
+        diag.maybe_write();
         // Liveness uses the RAW device audio (is it delivering anything at all),
         // before AEC — the cancelled mic can be near-silent when it's all echo.
         let raw_alive = chunk.samples.iter().any(|s| s.abs() > 1e-4);
