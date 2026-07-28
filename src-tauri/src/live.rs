@@ -370,6 +370,12 @@ pub fn get_thresholds(live: tauri::State<'_, LiveState>) -> Thresholds {
 #[tauri::command]
 pub fn panic_now(app: tauri::AppHandle) {
     let card = crate::mode2::panic_card();
+    // Mark the overlay as OFF the matched card (like the auto-assemble path), so
+    // a later Decision::Stay re-shows the real card — otherwise the panic card
+    // stays stuck until the conversation jumps to a different card.
+    app.state::<LiveState>()
+        .overlay_off_card
+        .store(true, Ordering::SeqCst);
     app.emit_to("overlay", "card:assembled", &card).ok();
 }
 

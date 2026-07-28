@@ -22,6 +22,16 @@ use tauri::{Emitter, Manager};
 /// always a wrong/dead output endpoint — the classic earbuds/loopback trap.
 const DEAD_CHANNEL_SECS: u64 = 6;
 
+/// The mic delivers audio chunks CONTINUOUSLY (even silence), so if it stops
+/// delivering for this long the stream itself died — unplug, mute, or a capture
+/// rebuild that never recovered — as opposed to the user merely being quiet
+/// (which still delivers near-zero chunks). This catches a mic that dies AFTER
+/// producing audio, which the energy-only "never alive" check cannot see.
+/// (The loopback "them" channel has real silence gaps during far-end pauses, so
+/// delivery-based death detection there needs per-device knowledge — left to the
+/// live audio pass; see Documents/11_AUDIT_2026-07-29.md.)
+const MIC_STALL_SECS: u64 = 4;
+
 /// Speaker-echo filter window and threshold: a "me" final that overlaps a
 /// "them" final from the last ~4 s by this fraction of words is the mic
 /// hearing the speakers, not the user — drop it from the match engine.
@@ -60,6 +70,26 @@ struct Running {
     stop_worker: std::sync::Arc<std::sync::atomic::AtomicBool>,
     worker: Option<std::thread::JoinHandle<()>>,
     health: Option<std::thread::JoinHandle<()>>,
+    /// The ASR language the worker was spawned with. If a later start_audio has a
+    /// different language (pre-flight "auto" → a session's fixed language on
+    /// go-live), the worker must be restarted to re-bind it.
+    language: String,
+}
+
+/// Stop the capture + worker + watchdog if running (no status event — callers
+/// that need one emit it). Shared by stop_audio and the language-restart path.
+fn stop_running(audio: &AudioState) {
+    let running = audio.running.lock().ok().and_then(|mut g| g.take());
+    if let Some(mut r) = running {
+        r.stop_worker.store(true, std::sync::atomic::Ordering::SeqCst);
+        r.handles.stop(); // drops the capture tx → worker's rx closes
+        if let Some(w) = r.worker.take() {
+            let _ = w.join();
+        }
+        if let Some(h) = r.health.take() {
+            let _ = h.join();
+        }
+    }
 }
 
 #[derive(Serialize, Clone)]
@@ -106,10 +136,22 @@ fn call_language(app: &tauri::AppHandle) -> String {
 
 #[tauri::command]
 pub fn start_audio(app: tauri::AppHandle, audio: tauri::State<'_, AudioState>) -> Result<(), String> {
-    // Cheap running-check without holding the lock across the model load.
-    if audio.running.lock().map_err(|e| e.to_string())?.is_some() {
-        return Ok(());
+    // Language for this call (cheap DB read), computed up front so we can tell a
+    // no-op start (already running with the RIGHT language) from a restart:
+    // pre-flight starts capture as "auto", so when a fixed-language session goes
+    // live the worker must be torn down and re-spawned bound to that language.
+    let language = call_language(&app);
+    {
+        let guard = audio.running.lock().map_err(|e| e.to_string())?;
+        if let Some(r) = guard.as_ref() {
+            if r.language == language {
+                return Ok(()); // already running with the right language
+            }
+        }
     }
+    // Running with a DIFFERENT language (or, harmlessly, not running at all) →
+    // tear it down before the fresh start so the worker re-binds the language.
+    stop_running(audio.inner());
 
     // The ASR model load reads ~630 MB from disk over several seconds — do it
     // BEFORE taking the state lock so stop/status stay responsive during start.
@@ -133,8 +175,7 @@ pub fn start_audio(app: tauri::AppHandle, audio: tauri::State<'_, AudioState>) -
         .map(|s| engine::EnginePref::parse(&s))
         .unwrap_or(engine::EnginePref::Auto);
     let asr = engine::AsrEngine::load(&data_dir, threads, pref)?;
-    // Steer the multilingual model with the active session's expected language.
-    let language = call_language(&app);
+    // `language` (computed up front) steers the multilingual model.
     tracing::info!(engine = asr.label(), language = %language, "ASR engine for the call");
 
     let mut guard = audio.running.lock().map_err(|e| e.to_string())?;
@@ -146,22 +187,29 @@ pub fn start_audio(app: tauri::AppHandle, audio: tauri::State<'_, AudioState>) -
     let handles = capture::start(tx)?;
 
     let stop_worker = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    // Millis-since-start of the last chunk seen on each channel (0 = never).
+    // Millis-since-start of the last LIVE (energy) sample on each channel (0 = never).
     let them_seen = Arc::new(AtomicU64::new(0));
     let me_seen = Arc::new(AtomicU64::new(0));
+    // Last mic chunk DELIVERY time (0 = never), regardless of energy — used to
+    // detect a mic that dies mid-call (see mic_stream_stalled).
+    let me_delivered = Arc::new(AtomicU64::new(0));
     let model = Some(asr.label().to_string()); // captured before `asr` moves into the worker
     let worker = {
         let app = app.clone();
         let stop = stop_worker.clone();
         let them_seen = them_seen.clone();
         let me_seen = me_seen.clone();
-        std::thread::spawn(move || worker_loop(app, asr, language, rx, stop, them_seen, me_seen))
+        let me_delivered = me_delivered.clone();
+        let language = language.clone(); // keep the original for `Running.language`
+        std::thread::spawn(move || {
+            worker_loop(app, asr, language, rx, stop, them_seen, me_seen, me_delivered)
+        })
     };
     // Health watchdog: warns when a channel goes quiet (wrong endpoint / earbuds).
     let health = {
         let app = app.clone();
         let stop = stop_worker.clone();
-        std::thread::spawn(move || health_loop(app, stop, them_seen, me_seen))
+        std::thread::spawn(move || health_loop(app, stop, them_seen, me_seen, me_delivered))
     };
 
     *guard = Some(Running {
@@ -169,6 +217,7 @@ pub fn start_audio(app: tauri::AppHandle, audio: tauri::State<'_, AudioState>) -
         stop_worker,
         worker: Some(worker),
         health: Some(health),
+        language,
     });
     app.emit_to(
         "dashboard",
@@ -186,20 +235,9 @@ pub fn start_audio(app: tauri::AppHandle, audio: tauri::State<'_, AudioState>) -
 
 #[tauri::command]
 pub fn stop_audio(app: tauri::AppHandle, audio: tauri::State<'_, AudioState>) -> Result<(), String> {
-    let running = audio.running.lock().map_err(|e| e.to_string())?.take();
-    if let Some(mut r) = running {
-        r.stop_worker
-            .store(true, std::sync::atomic::Ordering::SeqCst);
-        r.handles.stop(); // drops the capture tx → worker's rx closes
-        if let Some(w) = r.worker.take() {
-            let _ = w.join();
-        }
-        // Join the watchdog too, so stop_audio returns only once every thread
-        // is down — no stale health event can fire after stop or into a restart.
-        if let Some(h) = r.health.take() {
-            let _ = h.join();
-        }
-    }
+    // Joins the worker + watchdog, so stop returns only once every thread is
+    // down — no stale health event can fire after stop or into a restart.
+    stop_running(audio.inner());
     app.emit_to(
         "dashboard",
         "audio:status",
@@ -216,6 +254,7 @@ pub fn stop_audio(app: tauri::AppHandle, audio: tauri::State<'_, AudioState>) ->
 
 /// Drains audio chunks, runs ASR per channel, and forwards results:
 /// finals go into the rolling windows (match engine); partials go to the UI.
+#[allow(clippy::too_many_arguments)] // cohesive thread-entry args (asr + 3 liveness atomics)
 fn worker_loop(
     app: tauri::AppHandle,
     asr: engine::AsrEngine,
@@ -224,6 +263,7 @@ fn worker_loop(
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
     them_seen: Arc<AtomicU64>,
     me_seen: Arc<AtomicU64>,
+    me_delivered: Arc<AtomicU64>,
 ) {
     // Both channels of a call share the session's language; "auto" (scratch /
     // no session) lets the multilingual model detect it per channel.
@@ -244,6 +284,11 @@ fn worker_loop(
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
         };
         let now_ms = origin.elapsed().as_millis() as u64;
+        // Record mic chunk DELIVERY (energy-independent) — a gap means the stream
+        // died, which the energy check below cannot distinguish from a quiet user.
+        if matches!(chunk.channel, Channel::Me) {
+            me_delivered.store(now_ms.max(1), Ordering::SeqCst);
+        }
         // Liveness uses the RAW device audio (is it delivering anything at all),
         // before AEC — the cancelled mic can be near-silent when it's all echo.
         let raw_alive = chunk.samples.iter().any(|s| s.abs() > 1e-4);
@@ -341,29 +386,40 @@ fn channel_is_dead(last_live_ms: u64, now_ms: u64) -> bool {
     last_live_ms == 0 && now_ms > DEAD_CHANNEL_SECS * 1000
 }
 
+/// The mic stopped DELIVERING chunks after having delivered some — a dead stream
+/// (unplug / failed rebuild), not just a quiet user. `last_delivery_ms` is 0
+/// until the first chunk, so a never-started mic is left to `channel_is_dead`.
+fn mic_stream_stalled(last_delivery_ms: u64, now_ms: u64) -> bool {
+    last_delivery_ms != 0 && now_ms.saturating_sub(last_delivery_ms) > MIC_STALL_SECS * 1000
+}
+
 /// Emits a health event whenever a channel's silence state changes.
 fn health_loop(
     app: tauri::AppHandle,
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
     them_seen: Arc<AtomicU64>,
     me_seen: Arc<AtomicU64>,
+    me_delivered: Arc<AtomicU64>,
 ) {
     let origin = Instant::now();
     let mut last: Option<ChannelHealth> = None;
     while !stop.load(Ordering::SeqCst) {
         std::thread::sleep(Duration::from_millis(1000));
         let now_ms = origin.elapsed().as_millis() as u64;
-        // A channel is a wiring problem only if it has produced NO live audio at
-        // all since the check began (past a short grace), NOT if it fell silent
-        // for a moment. Loopback ("them") emits nothing for whole far-end turns
-        // by design, and the mic ("me") is quiet while the user listens — rolling
+        // A channel is a wiring problem if it has produced NO live audio at all
+        // since the check began (past a short grace), NOT if it fell silent for a
+        // moment. Loopback ("them") emits nothing for whole far-end turns by
+        // design, and the mic ("me") is quiet while the user listens — rolling
         // silence is normal on a real, turn-taking call, so treating it as death
         // fired a false "dead output" alarm on essentially every turn. `seen` is
         // 0 until the first live sample (stored as now_ms.max(1)), so 0 == never.
         let dead = |seen: &AtomicU64| channel_is_dead(seen.load(Ordering::SeqCst), now_ms);
         let health = ChannelHealth {
             them_silent: dead(&them_seen),
-            me_silent: dead(&me_seen),
+            // The mic ALSO counts as silent if its stream stopped delivering
+            // mid-call (dead-after-alive), which energy-only liveness misses.
+            me_silent: dead(&me_seen)
+                || mic_stream_stalled(me_delivered.load(Ordering::SeqCst), now_ms),
         };
         if last.as_ref().map(|l| (l.them_silent, l.me_silent))
             != Some((health.them_silent, health.me_silent))
@@ -414,5 +470,16 @@ mod tests {
         // NOT be dead. The old rolling-silence logic wrongly flagged this.
         assert!(!channel_is_dead(1, grace + 60_000));
         assert!(!channel_is_dead(500, 10 * grace));
+    }
+
+    #[test]
+    fn mic_stall_is_a_dead_stream_not_a_quiet_user() {
+        // Delivery is energy-INDEPENDENT: a quiet-but-alive mic still delivers
+        // (near-silent) chunks, so it must NOT be flagged; only a mic that stops
+        // delivering entirely (unplug / failed rebuild) is stalled.
+        let t = MIC_STALL_SECS * 1000;
+        assert!(!mic_stream_stalled(0, t + 5000)); // never delivered → channel_is_dead's job
+        assert!(!mic_stream_stalled(9_000, 9_000 + t - 1)); // delivered recently → alive
+        assert!(mic_stream_stalled(1_000, 1_000 + t + 1)); // delivered, then gone → dead
     }
 }
