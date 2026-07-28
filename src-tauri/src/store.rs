@@ -721,17 +721,22 @@ pub fn delete_card(conn: &Connection, card_id: &str) -> Result<(), String> {
     Ok(())
 }
 
-pub fn wipe_corpus(conn: &Connection) -> Result<(), String> {
+pub fn wipe_corpus(conn: &mut Connection) -> Result<(), String> {
     // card_events.card_id has no FK to cards (it is a retrieval log, kept even
     // if a card is later edited), so deleting cards does NOT cascade to it —
     // wipe it explicitly or a full corpus wipe leaves dangling match-log rows.
     // coverage and card_vec DO cascade from cards (ON DELETE CASCADE), so the
     // cards delete already clears those.
-    conn.execute_batch(
+    //
+    // One transaction so a crash mid-wipe can't leave a half-cleared corpus
+    // (e.g. FTS/vec emptied but cards intact → retrieval on vectorless cards).
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    tx.execute_batch(
         "DELETE FROM bullet_vec; DELETE FROM card_vec; DELETE FROM card_fts;
          DELETE FROM card_events; DELETE FROM bullets; DELETE FROM cards;",
     )
-    .map_err(|e| e.to_string())
+    .map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
@@ -759,7 +764,7 @@ mod tests {
         // orphaned match-log rows. Plain stand-ins for the tables wipe touches
         // (the real bullet_vec/card_vec/card_fts are vec0/fts5, needing the
         // sqlite-vec extension — not required to exercise the DELETE batch).
-        let conn = Connection::open_in_memory().unwrap();
+        let mut conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(
             "CREATE TABLE cards (id TEXT PRIMARY KEY);
              CREATE TABLE bullets (id TEXT PRIMARY KEY);
@@ -771,7 +776,7 @@ mod tests {
              INSERT INTO card_events (card_id) VALUES ('c1'), ('c1');",
         )
         .unwrap();
-        wipe_corpus(&conn).unwrap();
+        wipe_corpus(&mut conn).unwrap();
         let n: i64 = conn
             .query_row("SELECT COUNT(*) FROM card_events", [], |r| r.get(0))
             .unwrap();

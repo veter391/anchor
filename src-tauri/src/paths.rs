@@ -1,8 +1,8 @@
-//! Portable data location (owner decision 2026-07-23): the database, the
-//! downloaded models and the embedding cache all live in ONE folder ('data/')
-//! next to the executable, so Anchor is self-contained — one delete removes
-//! everything, nothing is scattered across the machine. Ships as an
-//! extract-and-run folder.
+//! Data location. The database, downloaded models and embedding cache live in
+//! ONE folder. The PORTABLE build keeps it as `data/` next to the executable
+//! (owner decision 2026-07-23) — self-contained, one delete removes everything.
+//! The INSTALLED build keeps it in a per-user folder outside the (churned)
+//! install dir so upgrades never wipe user data — see `data_dir`.
 //!
 //! The portable folder holds the transcript DB and downloaded models, so on
 //! Windows its ACL is restricted to the current user + SYSTEM + Administrators
@@ -12,22 +12,33 @@
 
 use std::path::{Path, PathBuf};
 
-/// The one data folder, next to the executable.
+/// A stable per-user data folder (installed build / current_exe fallback).
+fn per_user_data_dir() -> PathBuf {
+    std::env::var_os("LOCALAPPDATA")
+        .or_else(|| std::env::var_os("APPDATA"))
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+        .join("AnchorData")
+}
+
+/// The one data folder holding the DB, downloaded models and cache.
+///
+/// - **Portable build:** `data/` next to the executable — self-contained, one
+///   delete removes everything (owner decision 2026-07-23).
+/// - **Installed build (NSIS):** a per-user folder OUTSIDE the install dir. The
+///   installer drops a `.installed` marker next to the exe; the install dir
+///   (`%LOCALAPPDATA%\Anchor`) is churned on every upgrade/uninstall, so the
+///   DB, transcripts and ~1 GB of models must not live under it or an upgrade
+///   would wipe them. `AnchorData` is a sibling the uninstaller never touches.
 pub fn data_dir() -> PathBuf {
-    let base = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(Path::to_path_buf))
-        .unwrap_or_else(|| {
-            // current_exe() failing is rare; fall back to a STABLE per-user
-            // location, never the unpredictable process CWD (audit 2026-07-23).
+    let dir = match std::env::current_exe().ok().and_then(|p| p.parent().map(Path::to_path_buf)) {
+        Some(parent) if parent.join(".installed").exists() => per_user_data_dir(),
+        Some(parent) => parent.join("data"),
+        None => {
             tracing::warn!("current_exe() failed; using a stable per-user data dir");
-            std::env::var_os("LOCALAPPDATA")
-                .or_else(|| std::env::var_os("APPDATA"))
-                .map(PathBuf::from)
-                .unwrap_or_else(std::env::temp_dir)
-                .join("Anchor")
-        });
-    let dir = base.join("data");
+            per_user_data_dir()
+        }
+    };
     let _ = std::fs::create_dir_all(&dir);
     dir
 }
@@ -117,29 +128,34 @@ pub fn harden_data_dir_acl() {}
 /// Recursively copy a directory's contents. Does NOT follow symlinks/junctions
 /// (audit 2026-07-23: `is_dir()` follows them, letting a planted link redirect
 /// the copy outside the source tree). Best-effort; skips failures.
-fn copy_dir(from: &Path, to: &Path) {
+/// Returns `true` only if every file under `from` was copied. Callers that must
+/// not mark a migration "done" on a torn copy (models — #6) gate on this.
+fn copy_dir(from: &Path, to: &Path) -> bool {
     if std::fs::create_dir_all(to).is_err() {
-        return;
+        return false;
     }
     let Ok(entries) = std::fs::read_dir(from) else {
-        return;
+        return false;
     };
+    let mut ok = true;
     for e in entries.flatten() {
         let src = e.path();
         // symlink_metadata does not traverse links.
         let Ok(md) = std::fs::symlink_metadata(&src) else {
+            ok = false;
             continue;
         };
         if md.file_type().is_symlink() {
-            continue; // never copy through a link
+            continue; // never copy through a link (intentional skip, not a failure)
         }
         let dst = to.join(e.file_name());
         if md.is_dir() {
-            copy_dir(&src, &dst);
-        } else {
-            let _ = std::fs::copy(&src, &dst);
+            ok &= copy_dir(&src, &dst);
+        } else if std::fs::copy(&src, &dst).is_err() {
+            ok = false;
         }
     }
+    ok
 }
 
 /// Folds a WAL into the main DB file so a single-file copy is consistent.
@@ -204,9 +220,15 @@ pub fn migrate_if_needed(old_app_data: Option<&Path>, old_cache_candidates: &[Pa
     let old_models = old.join("models");
     if !marker.exists() && old_models.is_dir() {
         std::thread::spawn(move || {
-            copy_dir(&old_models, &data.join("models"));
-            let _ = std::fs::write(&marker, b"1");
-            tracing::info!("migrated models into the portable folder");
+            // Only mark done on a COMPLETE copy — otherwise a torn copy (disk
+            // full / locked file) would be skipped forever, leaving a partial
+            // model set. On failure, leave no marker so the next launch retries.
+            if copy_dir(&old_models, &data.join("models")) {
+                let _ = std::fs::write(&marker, b"1");
+                tracing::info!("migrated models into the portable folder");
+            } else {
+                tracing::warn!("model migration incomplete; will retry next launch");
+            }
         });
     }
 }

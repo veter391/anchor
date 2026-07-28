@@ -5,6 +5,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { panel, btn, btnGhost, SectionTitle } from "../ui";
 import { PreflightAudio } from "../PreflightAudio";
 
@@ -62,8 +63,25 @@ export function SessionDetail({ session, onBack }: { session: SessionRow; onBack
   const [status, setStatus] = useState(session.status);
   const [report, setReport] = useState<Report | null>(null);
   const [shareHidden, setShareHidden] = useState(false);
+  const [health, setHealth] = useState<{ them_silent: boolean; me_silent: boolean } | null>(null);
 
   const closed = status === "closed_green" || status === "closed_red";
+
+  // During a LIVE call the pre-flight audio panel is unmounted, so nothing else
+  // is watching the dead-channel signal. Subscribe here for the whole call: if
+  // "them" (or the mic) goes silent mid-session — the Bluetooth A2DP→HFP switch
+  // the capture layer anticipates — the user must SEE it, not stare at a
+  // "live" session that is silently transcribing nothing.
+  useEffect(() => {
+    if (!live) return;
+    const un = listen<{ them_silent: boolean; me_silent: boolean }>("audio:health", (e) =>
+      setHealth(e.payload),
+    );
+    return () => {
+      un.then((f) => f()).catch(() => {});
+      setHealth(null); // clear stale health when the call ends
+    };
+  }, [live]);
 
   // Audio capture follows the session's live state, not any child component's
   // mount. On leaving the view we stop capture ONLY if this session is not live
@@ -315,6 +333,31 @@ export function SessionDetail({ session, onBack }: { session: SessionRow; onBack
           )}
 
           {!live && <PreflightAudio />}
+
+          {live && health && (health.them_silent || health.me_silent) && (
+            <div
+              style={{
+                ...panel,
+                borderColor: "var(--red)",
+                color: "var(--red)",
+                fontSize: 13.5,
+                display: "flex",
+                gap: 9,
+                alignItems: "center",
+              }}
+            >
+              <span aria-hidden style={{ fontSize: 16 }}>
+                ⚠️
+              </span>
+              <span>
+                {health.them_silent && health.me_silent
+                  ? "Both audio channels are silent — Anchor is hearing nothing. Check your microphone and system audio (a headset switch can move the output)."
+                  : health.them_silent
+                    ? "The other side has gone silent — Anchor is not hearing them. A headset or output-device switch can cause this; check your system audio."
+                    : "Your microphone has gone silent — Anchor is not hearing you. Check your mic is connected and not muted."}
+              </span>
+            </div>
+          )}
 
           {/* Pre-flight research → context card */}
           <section style={{ ...panel, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>

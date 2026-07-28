@@ -195,8 +195,8 @@ fn delete_card(db: tauri::State<'_, Db>, card_id: String) -> Result<(), String> 
 
 #[tauri::command]
 fn wipe_corpus(db: tauri::State<'_, Db>) -> Result<(), String> {
-    let conn = db.conn.lock().map_err(|e| e.to_string())?;
-    store::wipe_corpus(&conn)
+    let mut conn = db.conn.lock().map_err(|e| e.to_string())?;
+    store::wipe_corpus(&mut conn)
 }
 
 #[derive(serde::Serialize)]

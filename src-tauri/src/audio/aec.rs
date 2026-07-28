@@ -30,6 +30,13 @@ const LAG: i64 = 800;
 /// Never zero-fill a gap larger than this (timestamp glitch / very long silence):
 /// reset the line instead, to bound memory and avoid a pathological fill.
 const MAX_GAP: i64 = RATE;
+/// Trailing history to keep on the reference line. `drain` only trims on a
+/// `push_mic`; if the mic stalls (unplugged / rebuild backoff) while the far end
+/// keeps talking with sub-`MAX_GAP` gaps, the reference would grow without bound.
+/// It is never needed older than the mic's consumption front, which on resume
+/// jumps to real time — so keep only a short trailing window, comfortably larger
+/// than `LAG + FRAME` so a normally-lagging drain still finds its reference.
+const REF_KEEP: i64 = 2 * RATE; // 2 s (~64 KB of i16)
 
 /// A sample stream reconstructed on the shared capture timeline: contiguous
 /// samples with `start` = the timeline sample-position of `data[0]`. Reference
@@ -151,6 +158,12 @@ impl EchoCanceller {
         let pos = Self::pos_of(ts_us);
         let s: Vec<i16> = samples.iter().map(|&x| to_i16(x)).collect();
         self.reference.write(pos, &s);
+        // Bound memory independently of mic delivery: `drain` (the only other
+        // trimmer) runs only on `push_mic`, so a stalled mic + talking far end
+        // would grow this unboundedly. Keep just the recent window (REF_KEEP).
+        if self.reference.end - self.reference.start > REF_KEEP {
+            self.reference.trim_before(self.reference.end - REF_KEEP);
+        }
     }
 
     /// Feed mic ("me") samples; return echo-cancelled samples ready for ASR.
@@ -200,6 +213,13 @@ impl Default for EchoCanceller {
     }
 }
 
+#[cfg(test)]
+impl EchoCanceller {
+    fn reference_len(&self) -> usize {
+        self.reference.data.len()
+    }
+}
+
 #[inline]
 fn to_i16(s: f32) -> i16 {
     (s.clamp(-1.0, 1.0) * 32767.0) as i16
@@ -226,6 +246,25 @@ mod tests {
         assert!(f.iter().all(|&x| x == 0), "the silence gap reads as zeros");
         tl.read_frame(2 * FRAME as i64, &mut f);
         assert!(f.iter().all(|&x| x == 9), "post-gap frame aligns to its position");
+    }
+
+    #[test]
+    fn reference_buffer_is_bounded_when_mic_stalls() {
+        // Regression: the far end talks continuously (sub-MAX_GAP chunks) while
+        // the mic never delivers, so `drain`/`push_mic` never trim. The
+        // reference must not grow without bound.
+        let mut ec = EchoCanceller::new();
+        let chunk = [0.1f32; FRAME];
+        // 60 s of continuous far-end audio, no mic at all.
+        for i in 0..6000i64 {
+            let ts_us = (i * FRAME as i64 * 1_000_000 / RATE) as u64;
+            ec.push_reference(ts_us, &chunk);
+        }
+        assert!(
+            (ec.reference_len() as i64) <= REF_KEEP + FRAME as i64,
+            "reference grew unbounded: {} samples",
+            ec.reference_len()
+        );
     }
 
     #[test]
