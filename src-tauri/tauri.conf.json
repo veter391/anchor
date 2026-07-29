@@ -40,8 +40,12 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["nsis"],
-    "icon": ["icons/icon.ico"],
+    "targets": [
+      "nsis"
+    ],
+    "icon": [
+      "icons/icon.ico"
+    ],
     "publisher": "veter391",
     "category": "Productivity",
     "shortDescription": "Live notes overlay for online calls",
@@ -51,6 +55,14 @@
         "installMode": "currentUser",
         "installerHooks": "installer.nsh"
       }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IERCQjk3Nzc1NDNFNkM4QTcKUldTbnlPWkRkWGU1MitEUFg4bmJZQzVGMDYzWks4S2F5YWhRMEcvTXlpdktvOHgyMVl5Mi9saksK",
+      "endpoints": [
+        "https://github.com/veter391/anchor/releases/latest/download/latest.json"
+      ]
     }
   }
 }

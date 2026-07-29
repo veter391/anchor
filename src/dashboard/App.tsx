@@ -13,6 +13,7 @@ import { Settings } from "./views/Settings";
 import { About } from "./views/About";
 import { ConsentModal } from "./ConsentModal";
 import { Setup } from "./Setup";
+import { UpdateBanner } from "./UpdateBanner";
 
 const NAV: { key: NavKey; label: string }[] = [
   { key: "general", label: "General" },
@@ -121,6 +122,7 @@ export function App() {
           zIndex: 1,
         }}
       >
+        {consent === true && <UpdateBanner />}
         <div className="rise-in" key={view}>
           {view === "general" && <General onNavigate={setView} />}
           {view === "sessions" && <Sessions />}
@@ -129,7 +131,7 @@ export function App() {
           {view === "about" && <About />}
         </div>
 
-        {/* Version badge, bottom-right (Handy-style). Update pill wires later. */}
+        {/* Version badge, bottom-right (Handy-style). Update prompt = UpdateBanner. */}
         {version && (
           <div
             style={{
