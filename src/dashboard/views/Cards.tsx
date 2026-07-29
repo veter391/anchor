@@ -41,6 +41,7 @@ export function Cards() {
   const [busy, setBusy] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
+  const [notes, setNotes] = useState<string[]>([]); // import warnings + skipped cards (never silent)
   const [progress, setProgress] = useState<string | null>(null);
   const [style, setStyle] = useState("default");
   const [review, setReview] = useState(false);
@@ -75,15 +76,19 @@ export function Cards() {
     if (!text.trim()) return;
     setErr(null);
     setInfo(null);
+    setNotes([]);
     try {
       if (looksLikeReadyCards(text)) {
         setBusy("adding your cards…");
         const r = await invoke<ImportReport>("import_cards", { markdown: text });
         setInfo(`Added ${r.imported} card${r.imported === 1 ? "" : "s"}.`);
+        // Surface warnings + skipped cards — the importer never fixes silently.
+        setNotes([...r.warnings, ...r.rejected.map((x) => `Skipped: ${x}`)]);
         setText("");
       } else {
         setBusy(review ? "drafting cards…" : "building your cards…");
         const r = await invoke<GenerateReport>("generate_cards", { text, auto: !review });
+        setNotes(r.warnings ?? []);
         if (review) {
           setText(r.markdown);
           setInfo(`Drafted ${r.cards} card${r.cards === 1 ? "" : "s"} — edit above, then Add.`);
@@ -106,9 +111,11 @@ export function Cards() {
     if (typeof dir !== "string") return;
     setBusy("importing folder…");
     setErr(null);
+    setNotes([]);
     try {
       const r = await invoke<ImportReport>("import_folder", { path: dir });
       setInfo(`Imported ${r.imported} cards from the folder.`);
+      setNotes([...r.warnings, ...r.rejected.map((x) => `Skipped: ${x}`)]);
       refresh();
     } catch (e) {
       setErr(String(e));
@@ -293,6 +300,22 @@ export function Cards() {
         <div style={{ ...panel, borderColor: "var(--red)", color: "var(--red)", fontSize: 13 }}>{err}</div>
       )}
       {info && !busy && <div style={{ fontSize: 13, color: "var(--accent)" }}>{info}</div>}
+      {notes.length > 0 && !busy && (
+        <div
+          style={{
+            ...panel,
+            borderColor: "var(--amber, #d9a441)",
+            color: "var(--text-soft)",
+            fontSize: 12.5,
+            display: "grid",
+            gap: 4,
+          }}
+        >
+          {notes.map((n, i) => (
+            <div key={i}>⚠ {n}</div>
+          ))}
+        </div>
+      )}
 
       {/* Library */}
       <section>

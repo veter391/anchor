@@ -66,6 +66,26 @@ export function About() {
         </p>
       </section>
 
+      <section style={panel}>
+        <SectionTitle>Models &amp; credits</SectionTitle>
+        <ul style={{ margin: 0, paddingLeft: 18, color: "var(--text-soft)", fontSize: 13.5, display: "grid", gap: 6 }}>
+          <li>
+            Speech recognition: sherpa-onnx Nemotron and Parakeet-TDT models (NVIDIA), used under
+            CC-BY-4.0.
+          </li>
+          <li>
+            Embeddings: EmbeddingGemma (Google), used under the Gemma Terms of Use.
+          </li>
+          <li>
+            Optional local assistant: Qwen3, Phi-4-mini and NuExtract GGUF models, each under its
+            own licence.
+          </li>
+        </ul>
+        <p style={{ color: "var(--text-muted)", fontSize: 12.5, margin: "10px 0 0" }}>
+          Full third-party notices are in THIRD_PARTY.md in the source.
+        </p>
+      </section>
+
       <div style={{ color: "var(--text-dim)", fontSize: 12 }}>
         {version ? `Anchor v${version} · ` : ""}Licence: AGPL-3.0 — use it, read it, fork it, but
         derivatives stay open.{boot ? ` · schema v${boot.schema_version}` : ""}
