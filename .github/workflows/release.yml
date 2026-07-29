@@ -122,7 +122,10 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           draft: true
-          prerelease: true
+          # NOT a prerelease: the updater endpoint (releases/latest) only resolves
+          # to the latest NON-prerelease release, so a prerelease would be invisible
+          # to the in-app updater. Pre-alpha status is stated in the notes instead.
+          prerelease: false
           files: |
             src-tauri/target/release/bundle/nsis/*-setup.exe
             src-tauri/target/release/bundle/nsis/latest.json
